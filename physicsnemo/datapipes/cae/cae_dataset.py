@@ -1135,7 +1135,7 @@ class CAEDataset:
 
 
 def compute_mean_std_min_max(
-    dataset: CAEDataset, field_keys: list[str], max_samples: int = 20
+    dataset: CAEDataset, field_keys: list[str], max_samples: int = 20, transient: bool = False
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Compute the mean, standard deviation, minimum, and maximum for a specified field
@@ -1146,7 +1146,8 @@ def compute_mean_std_min_max(
     Args:
         dataset (CAEDataset): The dataset to process.
         field_key (str): The key for the field to normalize.
-
+        max_samples (int): The maximum number of samples to process.
+        transient (bool): Whether the dataset is transient.
     Returns:
         tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
             mean, std, min, max tensors for the field.
@@ -1184,6 +1185,11 @@ def compute_mean_std_min_max(
             device=example_data[key].device,
         )
 
+    if transient:
+        axis = (0, 1)
+    else:
+        axis = (0)
+
     global_start = time.perf_counter()
     start = time.perf_counter()
     data_list = np.arange(len(dataset))
@@ -1197,8 +1203,8 @@ def compute_mean_std_min_max(
             field_data = data[field_key]
 
             # Compute batch statistics
-            batch_mean = field_data.mean(axis=(0))
-            batch_M2 = ((field_data - batch_mean) ** 2).sum(axis=(0))
+            batch_mean = field_data.mean(axis=axis)
+            batch_M2 = ((field_data - batch_mean) ** 2).sum(axis=axis)
             batch_n = field_data.shape[0]
 
             # Update running mean and M2 (Welford's algorithm)

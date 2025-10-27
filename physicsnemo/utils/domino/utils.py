@@ -23,12 +23,45 @@ torch.Tensor operations on either CPU or GPU.
 """
 
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Optional, Sequence
 
 import torch
 
 from physicsnemo.utils.neighbors import knn
 
+
+def repeat_array(
+    arr: torch.Tensor, p: int, axis: Optional[int], new_axis: bool, **kwargs
+) -> torch.Tensor:
+    """Repeat each element p times along the specified axis using torch operations.
+    
+    Args:
+        arr: Input tensor to repeat.
+        p: Number of times to repeat each element.
+        axis: Axis along which to repeat. If None and new_axis is True, defaults to 0.
+        new_axis: If True, adds a new dimension before repeating. If False, repeats along existing axis.
+        **kwargs: Ignored keyword arguments (for backwards compatibility with xp parameter).
+    
+    Returns:
+        Tensor with repeated elements.
+        
+    Examples:
+        >>> import torch
+        >>> arr = torch.tensor([1, 2, 3])
+        >>> repeat_array(arr, 2, axis=0, new_axis=False)
+        tensor([1, 1, 2, 2, 3, 3])
+        >>> repeat_array(arr, 2, axis=0, new_axis=True).shape
+        torch.Size([2, 3])
+    """
+    if new_axis:
+        # Add new axis and repeat along it
+        if axis is None:
+            axis = 0
+        expanded = torch.unsqueeze(arr, dim=axis)
+        return torch.repeat_interleave(expanded, p, dim=axis)
+    else:
+        # Repeat along existing axis
+        return torch.repeat_interleave(arr, p, dim=axis)
 
 def calculate_center_of_mass(
     centers: torch.Tensor, sizes: torch.Tensor
