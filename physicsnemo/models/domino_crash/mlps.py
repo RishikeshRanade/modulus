@@ -33,7 +33,7 @@ class AggregationModel(Mlp):
     to predict the final output quantities. It serves as the final prediction layer
     that integrates all available information sources.
 
-    It is implemented as a straightforward MLP with 5 total layers.
+    It is implemented as a straightforward MLP with 6 total layers.
 
     """
 

@@ -46,43 +46,35 @@ def loss_fn(
     mask = abs(target - padded_value) > 1e-3
 
     if loss_type == "rmse":
-        dims = (0, 1)
+        dims = (0, 1, 2)
     else:
-        dims = None
+        dims = (0, 1, 2)
 
     num = torch.sum(mask * (output - target) ** 2.0, dims)
     if loss_type == "rmse":
-        denom = torch.sum(mask * (target - torch.mean(target, (0, 1))) ** 2.0, dims)
+        denom = torch.sum(mask * (target - torch.mean(target, dims)) ** 2.0, dims)
         loss = torch.mean(num / denom)
     elif loss_type == "mse":
-        denom = torch.sum(mask)
+        denom = torch.sum(mask, dims)
         loss = torch.mean(num / denom)
     else:
         raise ValueError(f"Invalid loss type: {loss_type}")
+
     return loss
 
 
 
 def compute_loss_dict(
-    prediction_vol: torch.Tensor,
     prediction_surf: torch.Tensor,
     batch_inputs: dict,
     loss_fn_type: dict,
-    integral_scaling_factor: float,
     surf_loss_scaling: float,
-    vol_loss_scaling: float,
-    first_deriv: torch.nn.Module | None = None,
-    eqn: Any = None,
-    bounding_box: torch.Tensor | None = None,
-    vol_factors: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, dict]:
     """
     Compute the loss terms in a single function call.
 
     Computes:
-    - Volume loss if prediction_vol is not None
     - Surface loss if prediction_surf is not None
-    - Integral loss if prediction_surf is not None
     - Total loss as a weighted sum of the above
 
     Returns:
@@ -92,18 +84,6 @@ def compute_loss_dict(
     nvtx.range_push("Loss Calculation")
     total_loss_terms = []
     loss_dict = {}
-
-    if prediction_vol is not None:
-        target_vol = batch_inputs["volume_fields"]
-            
-        loss_vol = loss_fn(
-            prediction_vol,
-            target_vol,
-            loss_fn_type.loss_type,
-            padded_value=-10,
-        )
-        loss_dict["loss_vol"] = loss_vol
-        total_loss_terms.append(loss_vol)
 
     if prediction_surf is not None:
         target_surf = batch_inputs["surface_fields"]

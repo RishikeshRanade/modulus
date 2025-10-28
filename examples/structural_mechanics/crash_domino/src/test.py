@@ -16,13 +16,13 @@
 
 """
 This code defines a distributed pipeline for testing the DoMINO model on
-CFD datasets. It includes the instantiating the DoMINO model and datapipe,
-automatically loading the most recent checkpoint, reading the VTP/VTU/STL
+Crash datasets. It includes the instantiating the DoMINO model and datapipe,
+automatically loading the most recent checkpoint, reading the VTP/STL
 testing files, calculation of parameters required for DoMINO model and
 evaluating the model in parallel using DistributedDataParallel across multiple
-GPUs. This is a common recipe that enables training of combined models for surface
-and volume as well either of them separately. The model predictions are loaded in
-the the VTP/VTU files and saved in the specified directory. The eval tab in
+GPUs. This is a common recipe that enables training of surface model.
+The model predictions are loaded in
+the the VTP/STL files and saved in the specified directory. The eval tab in
 config.yaml can be used to specify the input and output directories.
 """
 
@@ -70,21 +70,11 @@ def loss_fn(output, target):
     return loss
 
 
-def test_step(data_dict, model, device, cfg, vol_factors, surf_factors):
-    avg_tloss_vol = 0.0
+def test_step(data_dict, model, device, cfg, surf_factors):
     avg_tloss_surf = 0.0
-    running_tloss_vol = 0.0
     running_tloss_surf = 0.0
 
-    if cfg.model.model_type == "volume" or cfg.model.model_type == "combined":
-        output_features_vol = True
-    else:
-        output_features_vol = None
-
-    if cfg.model.model_type == "surface" or cfg.model.model_type == "combined":
-        output_features_surf = True
-    else:
-        output_features_surf = None
+    output_features_surf = True
 
     with torch.no_grad():
         point_batch_size = 256000
@@ -130,7 +120,7 @@ def test_step(data_dict, model, device, cfg, vol_factors, surf_factors):
             surface_areas = torch.unsqueeze(surface_areas, -1)
             surface_neighbors_areas = torch.unsqueeze(surface_neighbors_areas, -1)
             pos_surface_center_of_mass = data_dict["pos_surface_center_of_mass"]
-            num_points = surface_mesh_centers.shape[1]
+            num_points = surface_mesh_centers.shape[2]
             subdomain_points = int(np.floor(num_points / point_batch_size))
 
             target_surf = data_dict["surface_fields"]
@@ -144,21 +134,21 @@ def test_step(data_dict, model, device, cfg, vol_factors, surf_factors):
                 with torch.no_grad():
                     target_batch = target_surf[:, start_idx:end_idx]
                     surface_mesh_centers_batch = surface_mesh_centers[
-                        :, start_idx:end_idx
+                        :, :, start_idx:end_idx
                     ]
                     surface_mesh_neighbors_batch = surface_mesh_neighbors[
-                        :, start_idx:end_idx
+                        :, :, start_idx:end_idx
                     ]
-                    surface_normals_batch = surface_normals[:, start_idx:end_idx]
+                    surface_normals_batch = surface_normals[:, :, start_idx:end_idx]
                     surface_neighbors_normals_batch = surface_neighbors_normals[
-                        :, start_idx:end_idx
+                        :, :, start_idx:end_idx
                     ]
-                    surface_areas_batch = surface_areas[:, start_idx:end_idx]
+                    surface_areas_batch = surface_areas[:, :, start_idx:end_idx]
                     surface_neighbors_areas_batch = surface_neighbors_areas[
-                        :, start_idx:end_idx
+                        :, :, start_idx:end_idx
                     ]
                     pos_surface_center_of_mass_batch = pos_surface_center_of_mass[
-                        :, start_idx:end_idx
+                        :, :, start_idx:end_idx
                     ]
 
                     if cfg.model.transient:
@@ -230,7 +220,7 @@ def test_step(data_dict, model, device, cfg, vol_factors, surf_factors):
         else:
             prediction_surf = None
 
-    return None, prediction_surf
+    return prediction_surf
 
 
 @hydra.main(version_base="1.3", config_path="conf", config_name="config")
@@ -245,18 +235,7 @@ def main(cfg: DictConfig):
     DistributedManager.initialize()
     dist = DistributedManager()
 
-    if model_type == "volume" or model_type == "combined":
-        volume_variable_names = list(cfg.variables.volume.solution.keys())
-        num_vol_vars = 0
-        for j in volume_variable_names:
-            if cfg.variables.volume.solution[j] == "vector":
-                num_vol_vars += 3
-            else:
-                num_vol_vars += 1
-    else:
-        num_vol_vars = None
-
-    if model_type == "surface" or model_type == "combined":
+    if model_type == "surface":
         surface_variable_names = list(cfg.variables.surface.solution.keys())
         num_surf_vars = 0
         for j in surface_variable_names:
@@ -280,13 +259,11 @@ def main(cfg: DictConfig):
     ######################################################
     pickle_path = os.path.join(cfg.data.scaling_factors)
 
-    vol_factors, surf_factors = load_scaling_factors(cfg)
-    print("Vol factors:", vol_factors)
+    surf_factors = load_scaling_factors(cfg)
     print("Surf factors:", surf_factors)
 
     model = DoMINO(
         input_features=3,
-        output_features_vol=num_vol_vars,
         output_features_surf=num_surf_vars,
         global_features=global_features,
         model_parameters=cfg.model,
@@ -326,8 +303,6 @@ def main(cfg: DictConfig):
         create_directory(pred_save_path)
 
     l2_surface_all = []
-    l2_volume_all = []
-    aero_forces_all = []
     for count, dirname in enumerate(dirnames_per_gpu):
         filepath = os.path.join(input_path, dirname)
         tag = int(re.findall(r"(\w+?)(\d+)", dirname)[0][1])
@@ -577,8 +552,8 @@ def main(cfg: DictConfig):
 
         data_dict = {key: torch.unsqueeze(value, 0) for key, value in data_dict.items()}
 
-        prediction_vol, prediction_surf = test_step(
-            data_dict, model, dist.device, cfg, vol_factors, surf_factors
+        prediction_surf = test_step(
+            data_dict, model, dist.device, cfg, surf_factors
         )
 
         prediction_surf = prediction_surf[0].reshape(num_timesteps, num_points, prediction_surf.shape[-1])
@@ -735,10 +710,10 @@ def main(cfg: DictConfig):
             for ii in range(surface_fields.shape[0]):
                 print("Timestep:", ii)
                 l2_gt = np.mean(np.square(surface_fields[ii] - surface_coordinates_initial), (0))
-                l2_error = np.mean(np.square(prediction_surf[ii] - surface_fields[ii] - surface_coordinates_initial), (0))
+                l2_error = np.mean(np.square(prediction_surf[ii] - surface_fields[ii]), (0))
                 l2_surface_all.append(np.sqrt(l2_error / l2_gt))
 
-                error_max = (np.max(np.abs(prediction_surf[ii]), axis=(0)) - np.amax(abs(surface_fields[ii] - surface_coordinates_initial), axis=(0)))/np.amax(np.abs(surface_fields[ii] - surface_coordinates_initial), axis=(0))
+                error_max = (np.max(np.abs(prediction_surf[ii] - surface_coordinates_initial), axis=(0)) - np.amax(abs(surface_fields[ii] - surface_coordinates_initial), axis=(0)))/np.amax(np.abs(surface_fields[ii] - surface_coordinates_initial), axis=(0))
                 pred_displacement_mag = np.sqrt(np.sum(np.square(prediction_surf[ii] - surface_coordinates_initial), axis=(1)))
                 true_displacement_mag = np.sqrt(np.sum(np.square(surface_fields[ii] - surface_coordinates_initial), axis=(1)))
                 # print(true_displacement_mag.shape, pred_displacement_mag.shape)

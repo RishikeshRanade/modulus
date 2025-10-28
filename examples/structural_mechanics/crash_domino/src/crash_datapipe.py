@@ -15,7 +15,7 @@
 # limitations under the License.
 
 """
-This is the datapipe to read OpenFoam files (vtp/vtu/stl) and save them as point clouds 
+This is the datapipe to read VTK files (vtp/vtu/stl) and save them as point clouds 
 in npy format. 
 
 """
@@ -35,7 +35,7 @@ from utils import extract_index_from_filename, extract_time_series_info, get_tim
 
 class CrashDataset(Dataset):
     """
-    Datapipe for converting openfoam dataset to npy
+    Datapipe for converting VTK dataset to npy
 
     """
 
@@ -46,14 +46,11 @@ class CrashDataset(Dataset):
             "pMean",
             "wallShearStress",
         ],
-        volume_variables: Optional[list] = ["UMean", "pMean"],
         global_params_types: Optional[dict] = {
-            "inlet_velocity": "vector",
-            "air_density": "scalar",
+            "stress": "vector",
         },
         global_params_reference: Optional[dict] = {
-            "inlet_velocity": [30.0],
-            "air_density": 1.226,
+            "stress": [1.0],
         },
         device: int = 0,
         model_type=None,
@@ -73,12 +70,9 @@ class CrashDataset(Dataset):
         self.indices = np.array(len(self.filenames))
 
         self.surface_variables = surface_variables
-        self.volume_variables = volume_variables
 
         self.global_params_types = global_params_types
         self.global_params_reference = global_params_reference
-
-        self.stream_velocity = 0.0
 
         self.stress = self.global_params_reference["stress"]
 
@@ -93,7 +87,6 @@ class CrashDataset(Dataset):
         file_index = extract_index_from_filename(cfd_filename)
 
         displacement_dir = self.data_path / f"run{file_index}_displacement.vtp"
-        print("displacement_dir: ", displacement_dir)
 
         mesh_displacement = pv.read(displacement_dir)
 
@@ -108,7 +101,6 @@ class CrashDataset(Dataset):
 
         length_scale = np.amax(np.amax(stl_vertices, 0) - np.amin(stl_vertices, 0))
 
-        # print(mesh)
         cell_data = mesh_displacement.point_data_to_cell_data()
         surface_coordinates_centers = cell_data.cell_centers().points
         surface_normals = np.array(cell_data.cell_normals)
@@ -119,10 +111,6 @@ class CrashDataset(Dataset):
         timesteps, displacement_data, magnitude_data = get_time_series_data(mesh_displacement, data_prefix="displacement")
         surface_fields = displacement_data
         surface_coordinates = mesh_displacement.points
-        # print(surface_fields.shape)
-        # print(surface_fields[1].max(), surface_fields[1].min())
-        # print(surface_fields[-1].max(), surface_fields[-1].min())
-        # exit()
 
         surface_coordinates_all = []
         surface_normals_all = []
@@ -139,10 +127,6 @@ class CrashDataset(Dataset):
         surface_normals = np.concatenate([np.expand_dims(surface_normals, 0), surface_normals_all], axis=0)
         surface_sizes = np.concatenate([np.expand_dims(surface_sizes, 0), surface_sizes_all], axis=0)
  
-        # print("surface_coordinates.shape: ", surface_coordinates.shape)
-        # print("surface_normals.shape: ", surface_normals.shape)
-        # print("surface_sizes.shape: ", surface_sizes.shape)
-        
         # Arrange global parameters reference in a list based on the type of the parameter
         global_params_reference_list = []
         for name, type in self.global_params_types.items():
@@ -194,14 +178,10 @@ class CrashDataset(Dataset):
 
 
 if __name__ == "__main__":
-    fm_data = DSDataset(
-        data_path="/code/aerofoundationdata/",
-        phase="train",
-        volume_variables=["UMean", "pMean", "nutMean"],
-        surface_variables=["pMean", "wallShearStress", "nutMean"],
-        global_params_types={"inlet_velocity": "vector", "air_density": "scalar"},
-        global_params_reference={"inlet_velocity": [30.0], "air_density": 1.226},
-        sampling=False,
-        sample_in_bbox=False,
+    fm_data = CrashDataset(
+        input_dir="/user/data/",
+        surface_variables=["pMean", "wallShearStress"],
+        global_params_types={"stress": "vector"},
+        global_params_reference={"stress": [1.0]},
     )
     d_dict = fm_data[1]

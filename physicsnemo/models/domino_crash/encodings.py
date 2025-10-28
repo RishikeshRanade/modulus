@@ -16,9 +16,8 @@
 
 """
 This code contains the DoMINO model architecture.
-The DoMINO class contains an architecture to model both surface and
-volume quantities together as well as separately (controlled using
-the config.yaml file)
+The DoMINO class contains an architecture to model surface
+quantities
 """
 
 import torch
@@ -35,7 +34,7 @@ class LocalGeometryEncoding(nn.Module):
     A local geometry encoding module.
 
     This will apply a ball query to the input features, mapping the point cloud
-    to the volume mesh, and then apply a local point convolution to the output.
+    to the surface mesh, and then apply a local point convolution to the output.
 
     Args:
         radius: The radius of the ball query.
@@ -71,15 +70,15 @@ class LocalGeometryEncoding(nn.Module):
     def forward(
         self,
         encoding_g: torch.Tensor,
-        volume_mesh_centers: torch.Tensor,
+        surface_mesh_centers: torch.Tensor,
         p_grid: torch.Tensor,
     ) -> torch.Tensor:
-        batch_size = volume_mesh_centers.shape[0]
+        batch_size = surface_mesh_centers.shape[0]
         nx, ny, nz = self.grid_resolution
 
         p_grid = torch.reshape(p_grid, (batch_size, nx * ny * nz, 3))
         mapping, outputs = self.bq_warp(
-            volume_mesh_centers, p_grid, reverse_mapping=False
+            surface_mesh_centers, p_grid, reverse_mapping=False
         )
 
         mapping = mapping.type(torch.int64)
@@ -115,6 +114,7 @@ class MultiGeometryEncoding(nn.Module):
         base_layer: The number of neurons in the hidden layer of the MLP.
         activation: The activation function to use in the MLP.
         grid_resolution: The resolution of the grid.
+        n_upstream_radii: The number of upstream radii to use for the local geometry encodings.
     """
 
     def __init__(
@@ -148,6 +148,9 @@ class MultiGeometryEncoding(nn.Module):
     def calculate_total_neighbors_in_radius(
         self, geo_encoding_type: str, neighbors_in_radius: int, n_upstream_radii: int
     ) -> int:
+        """
+        Calculate the total number of neighbors in the radius of the local geometry encodings.
+        """
         if geo_encoding_type == "both":
             total_neighbors_in_radius = neighbors_in_radius * (n_upstream_radii + 1)
         elif geo_encoding_type == "stl":
@@ -160,12 +163,12 @@ class MultiGeometryEncoding(nn.Module):
     def forward(
         self,
         encoding_g: torch.Tensor,
-        volume_mesh_centers: torch.Tensor,
+        surface_mesh_centers: torch.Tensor,
         p_grid: torch.Tensor,
     ) -> torch.Tensor:
         return torch.cat(
             [
-                local_geo_encoding(encoding_g, volume_mesh_centers, p_grid)
+                local_geo_encoding(encoding_g, surface_mesh_centers, p_grid)
                 for local_geo_encoding in self.local_geo_encodings
             ],
             dim=-1,

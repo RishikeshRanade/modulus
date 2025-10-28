@@ -34,38 +34,25 @@ from torch.distributed.tensor.placement_types import (
 import pyvista as pv
 
 
-def get_num_vars(cfg: dict, model_type: Literal["volume", "surface", "combined"]):
-    """Calculate the number of variables for volume, surface, and global features.
+def get_num_vars(cfg: dict, model_type: Literal["surface"]):
+    """Calculate the number of variables for surface, and global features.
 
     This function analyzes the configuration to determine how many variables are needed
     for different mesh data types based on the model type. Vector variables contribute
     3 components (x, y, z) while scalar variables contribute 1 component each.
 
     Args:
-        cfg: Configuration object containing variable definitions for volume, surface,
+        cfg: Configuration object containing variable definitions for surface,
              and global parameters with their types (scalar/vector).
-        model_type (str): Type of model - can be "volume", "surface", or "combined".
+        model_type (str): Type of model - can be "surface".
                          Determines which variable types are included in the count.
 
     Returns:
         tuple: A 3-tuple containing:
-            - num_vol_vars (int or None): Number of volume variables. None if model_type
-              is not "volume" or "combined".
             - num_surf_vars (int or None): Number of surface variables. None if model_type
-              is not "surface" or "combined".
+              is not "surface".
             - num_global_features (int): Number of global parameter features.
     """
-    num_vol_vars = 0
-    volume_variable_names = []
-    if model_type == "volume" or model_type == "combined":
-        volume_variable_names = list(cfg.variables.volume.solution.keys())
-        for j in volume_variable_names:
-            if cfg.variables.volume.solution[j] == "vector":
-                num_vol_vars += 3
-            else:
-                num_vol_vars += 1
-    else:
-        num_vol_vars = None
 
     num_surf_vars = 0
     surface_variable_names = []
@@ -90,12 +77,12 @@ def get_num_vars(cfg: dict, model_type: Literal["volume", "surface", "combined"]
         else:
             raise ValueError(f"Unknown global parameter type")
 
-    return num_vol_vars, num_surf_vars, num_global_features
+    return num_surf_vars, num_global_features
 
 
 def get_keys_to_read(
     cfg: dict,
-    model_type: Literal["volume", "surface", "combined"],
+    model_type: Literal["surface"],
     get_ground_truth: bool = True,
 ):
     """
@@ -122,13 +109,6 @@ def get_keys_to_read(
         "global_params_reference": torch.tensor(cfg_params_vec).reshape(-1, 1),
     }
 
-    # Volume keys:
-    volume_keys = [
-        "volume_mesh_centers",
-    ]
-    if get_ground_truth:
-        volume_keys.append("volume_fields")
-
     # Surface keys:
     surface_keys = [
         "surface_mesh_centers",
@@ -138,9 +118,7 @@ def get_keys_to_read(
     if get_ground_truth:
         surface_keys.append("surface_fields")
 
-    if model_type == "volume" or model_type == "combined":
-        keys_to_read.extend(volume_keys)
-    if model_type == "surface" or model_type == "combined":
+    if model_type == "surface":
         keys_to_read.extend(surface_keys)
 
     return keys_to_read, keys_to_read_if_available
@@ -200,8 +178,6 @@ def coordinate_distributed_environment(cfg: DictConfig):
             "stl_faces": point_like_placement,
             "stl_areas": point_like_placement,
             "surface_fields": point_like_placement,
-            "volume_mesh_centers": point_like_placement,
-            "volume_fields": point_like_placement,
             "surface_mesh_centers": point_like_placement,
             "surface_normals": point_like_placement,
             "surface_areas": point_like_placement,
@@ -309,14 +285,7 @@ def load_scaling_factors(
         )
 
     if cfg.model.normalization == "min_max_scaling":
-        if cfg.model.model_type == "volume" or cfg.model.model_type == "combined":
-            vol_factors = np.asarray(
-                [
-                    scaling_factors.max_val["volume_fields"],
-                    scaling_factors.min_val["volume_fields"],
-                ]
-            )
-        if cfg.model.model_type == "surface" or cfg.model.model_type == "combined":
+        if cfg.model.model_type == "surface":
             surf_factors = np.asarray(
                 [
                     scaling_factors.max_val["surface_fields"],
@@ -324,14 +293,7 @@ def load_scaling_factors(
                 ]
             )
     elif cfg.model.normalization == "mean_std_scaling":
-        if cfg.model.model_type == "volume" or cfg.model.model_type == "combined":
-            vol_factors = np.asarray(
-            [
-                scaling_factors.mean["volume_fields"],
-                    scaling_factors.std["volume_fields"],
-                ]
-            )
-        if cfg.model.model_type == "surface" or cfg.model.model_type == "combined":
+        if cfg.model.model_type == "surface":
             surf_factors = np.asarray(
                 [
                     scaling_factors.mean["surface_fields"],
@@ -342,21 +304,16 @@ def load_scaling_factors(
         raise ValueError(f"Invalid normalization mode: {cfg.model.normalization}")
 
     dm = DistributedManager()
-    if cfg.model.model_type == "volume" or cfg.model.model_type == "combined":
-        vol_factors_tensor = torch.from_numpy(vol_factors)
-        vol_factors_tensor = vol_factors_tensor.to(dm.device, dtype=torch.float32)
-    else:
-        vol_factors_tensor = None
-    if cfg.model.model_type == "surface" or cfg.model.model_type == "combined":
+    
+    if cfg.model.model_type == "surface":
         surf_factors_tensor = torch.from_numpy(surf_factors)
         surf_factors_tensor = surf_factors_tensor.to(dm.device, dtype=torch.float32)
     else:
         surf_factors_tensor = None
-    return vol_factors_tensor, surf_factors_tensor
+    return surf_factors_tensor
 
 def compute_l2(
     pred_surface: torch.Tensor | None,
-    pred_volume: torch.Tensor | None,
     batch,
     dataloader,
 ) -> dict[str, torch.Tensor]:
@@ -369,20 +326,13 @@ def compute_l2(
     l2_dict = {}
 
     if pred_surface is not None:
-        _, target_surface = dataloader.unscale_model_outputs(
+        target_surface = dataloader.unscale_model_outputs(
             surface_fields=batch["surface_fields"]
         )
-        _, pred_surface = dataloader.unscale_model_outputs(surface_fields=pred_surface)
+        pred_surface = dataloader.unscale_model_outputs(surface_fields=pred_surface)
         l2_surface = metrics_fn_surface(pred_surface, target_surface)
         l2_dict.update(l2_surface)
-    if pred_volume is not None:
-        target_volume, _ = dataloader.unscale_model_outputs(
-            volume_fields=batch["volume_fields"]
-        )
-        pred_volume, _ = dataloader.unscale_model_outputs(volume_fields=pred_volume)
-        l2_volume = metrics_fn_volume(pred_volume, target_volume)
-        l2_dict.update(l2_volume)
-
+    
     return l2_dict
 
 
@@ -402,11 +352,11 @@ def metrics_fn_surface(
     """
 
     l2_num = (pred - target) ** 2
-    l2_num = torch.sum(l2_num, dim=1)
+    l2_num = torch.sum(l2_num, dim=(1,2))
     l2_num = torch.sqrt(l2_num)
 
     l2_denom = target**2
-    l2_denom = torch.sum(l2_denom, dim=1)
+    l2_denom = torch.sum(l2_denom, dim=(1,2))
     l2_denom = torch.sqrt(l2_denom)
 
     l2 = l2_num / l2_denom
@@ -415,34 +365,6 @@ def metrics_fn_surface(
         "l2_displacement_x": torch.mean(l2[:, 0]),
         "l2_displacement_y": torch.mean(l2[:, 1]),
         "l2_displacement_z": torch.mean(l2[:, 2]),
-    }
-
-    return metrics
-
-
-def metrics_fn_volume(
-    pred: torch.Tensor,
-    target: torch.Tensor,
-) -> dict[str, torch.Tensor]:
-    """
-    Computes L2 volume metrics between prediction and target.
-    """
-    l2_num = (pred - target) ** 2
-    l2_num = torch.sum(l2_num, dim=1)
-    l2_num = torch.sqrt(l2_num)
-
-    l2_denom = target**2
-    l2_denom = torch.sum(l2_denom, dim=1)
-    l2_denom = torch.sqrt(l2_denom)
-
-    l2 = l2_num / l2_denom
-
-    metrics = {
-        "l2_vol_pressure": torch.mean(l2[:, 3]),
-        "l2_velocity_x": torch.mean(l2[:, 0]),
-        "l2_velocity_y": torch.mean(l2[:, 1]),
-        "l2_velocity_z": torch.mean(l2[:, 2]),
-        "l2_nut": torch.mean(l2[:, 4]),
     }
 
     return metrics

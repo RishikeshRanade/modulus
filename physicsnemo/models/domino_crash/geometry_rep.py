@@ -416,6 +416,7 @@ class GeometryRep(nn.Module):
         )
 
         if self.cross_attention:
+            h = geometry_rep.geo_processor.base_filters
             self.combined_unet = UNet(
                 in_channels=1 + len(radii),
                 out_channels=1 + len(radii),

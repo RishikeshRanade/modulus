@@ -20,8 +20,8 @@ CFD datasets. It includes the computation of scaling factors, instantiating
 the DoMINO model and datapipe, automatically loading the most recent checkpoint,
 training the model in parallel using DistributedDataParallel across multiple
 GPUs, calculating the loss and updating model parameters using mixed precision.
-This is a common recipe that enables training of combined models for surface and
-volume as well either of them separately. Validation is also conducted every epoch,
+This is a common recipe that enables training of surface model.
+Validation is also conducted every epoch,
 where predictions are compared against ground truth values. The code logs training
 and validation metrics to TensorBoard. The train tab in config.yaml can be used to
 specify batch size, number of epochs and other training parameters.
@@ -33,7 +33,6 @@ import re
 from typing import Literal, Any
 from tabulate import tabulate
 
-import apex
 import numpy as np
 import hydra
 from hydra.utils import to_absolute_path
@@ -92,11 +91,8 @@ def validation_step(
     epoch_index,
     use_sdf_basis=False,
     use_surface_normals=False,
-    integral_scaling_factor=1.0,
     loss_fn_type=None,
-    vol_loss_scaling=None,
     surf_loss_scaling=None,
-    vol_factors: torch.Tensor | None = None,
     autocast_enabled=None,
 ):
     dm = DistributedManager()
@@ -108,22 +104,18 @@ def validation_step(
             sampled_batched = dict_to_device(sample_batched, device)
 
             with autocast("cuda", enabled=autocast_enabled, cache_enabled=False):
-                prediction_vol, prediction_surf = model(sampled_batched)
+                prediction_surf = model(sampled_batched)
 
                 loss, loss_dict = compute_loss_dict(
-                    prediction_vol,
                     prediction_surf,
                     sampled_batched,
                     loss_fn_type,
-                    integral_scaling_factor,
                     surf_loss_scaling,
-                    vol_loss_scaling,
-                    vol_factors,
                 )
 
             running_vloss += loss.item()
             local_metrics = compute_l2(
-                prediction_surf, prediction_vol, sampled_batched, dataloader
+                prediction_surf, sampled_batched, dataloader
             )
             if metrics is None:
                 metrics = local_metrics
@@ -168,12 +160,8 @@ def train_epoch(
     gpu_handle,
     epoch_index,
     device,
-    integral_scaling_factor,
     loss_fn_type,
-    vol_loss_scaling=None,
     surf_loss_scaling=None,
-    vol_factors: torch.Tensor | None = None,
-    surf_factors: torch.Tensor | None = None,
     autocast_enabled=None,
     grad_clip_enabled=None,
     grad_max_norm=None,
@@ -193,26 +181,18 @@ def train_epoch(
             io_end_time = time.perf_counter()
             with autocast("cuda", enabled=autocast_enabled, cache_enabled=False):
                 with nvtx.range("Model Forward Pass"):
-                    prediction_vol, prediction_surf = model(sampled_batched)
+                    prediction_surf = model(sampled_batched)
 
                 loss, loss_dict = compute_loss_dict(
-                    prediction_vol,
                     prediction_surf,
                     sampled_batched,
                     loss_fn_type,
-                    integral_scaling_factor,
                     surf_loss_scaling,
-                    vol_loss_scaling,
-                    vol_factors,
                 )
 
-                # Compute metrics:
-                if isinstance(prediction_vol, tuple):
-                    # This is if return_neighbors is on for volume:
-                    prediction_vol = prediction_vol[0]
-
+                
                 local_metrics = compute_l2(
-                    prediction_surf, prediction_vol, sampled_batched, dataloader
+                    prediction_surf, sampled_batched, dataloader
                 )
                 if metrics is None:
                     metrics = local_metrics
@@ -323,24 +303,18 @@ def main(cfg: DictConfig) -> None:
     ######################################################
     # Get scaling factors - precompute them if this fails!
     ######################################################
-    vol_factors, surf_factors = load_scaling_factors(cfg)
+    try:
+        surf_factors = load_scaling_factors(cfg)
+    except FileNotFoundError:
+        surf_factors = None
+    if surf_factors is None:
+        raise FileNotFoundError(f"Scaling factors not found at: {cfg.data.scaling_factors}; please run compute_statistics.py to compute them.")
 
     ######################################################
     # Configure the model
     ######################################################
     model_type = cfg.model.model_type
-    num_vol_vars, num_surf_vars, num_global_features = get_num_vars(cfg, model_type)
-
-    if model_type == "combined" or model_type == "surface":
-        surface_variable_names = list(cfg.variables.surface.solution.keys())
-    else:
-        surface_variable_names = []
-
-    if model_type == "combined" or model_type == "volume":
-        volume_variable_names = list(cfg.variables.volume.solution.keys())
-    else:
-        volume_variable_names = []
-
+    num_surf_vars, num_global_features = get_num_vars(cfg, model_type)
 
     ######################################################
     # Configure the dataset
@@ -348,7 +322,7 @@ def main(cfg: DictConfig) -> None:
 
     # This helper function is to determine which keys to read from the data
     # (and which to use default values for, if they aren't present - like
-    # air_density, for example)
+    # stress, for example)
     keys_to_read, keys_to_read_if_available = get_keys_to_read(
         cfg, model_type, get_ground_truth=True
     )
@@ -368,7 +342,6 @@ def main(cfg: DictConfig) -> None:
         phase="train",
         keys_to_read=keys_to_read,
         keys_to_read_if_available=keys_to_read_if_available,
-        vol_factors=vol_factors,
         surf_factors=surf_factors,
         device_mesh=domain_mesh,
         placements=placements,
@@ -388,7 +361,6 @@ def main(cfg: DictConfig) -> None:
         phase="val",
         keys_to_read=keys_to_read,
         keys_to_read_if_available=keys_to_read_if_available,
-        vol_factors=vol_factors,
         surf_factors=surf_factors,
         device_mesh=domain_mesh,
         placements=placements,
@@ -408,7 +380,6 @@ def main(cfg: DictConfig) -> None:
     ######################################################
     model = DoMINO(
         input_features=3,
-        output_features_vol=num_vol_vars,
         output_features_surf=num_surf_vars,
         global_features=num_global_features,
         model_parameters=cfg.model,
@@ -474,11 +445,9 @@ def main(cfg: DictConfig) -> None:
     epoch_number = 0
 
     model_save_path = os.path.join(cfg.output, "models")
-    param_save_path = os.path.join(cfg.output, "param")
     best_model_path = os.path.join(model_save_path, "best_model")
     if dist.rank == 0:
         create_directory(model_save_path)
-        create_directory(param_save_path)
         create_directory(best_model_path)
 
     if dist.world_size > 1:
@@ -510,8 +479,6 @@ def main(cfg: DictConfig) -> None:
 
     best_vloss = min(numbers) if numbers else 1_000_000.0
 
-    initial_integral_factor_orig = cfg.model.integral_loss_scaling_factor
-
     ######################################################
     # Begin Training loop over epochs
     ######################################################
@@ -525,8 +492,6 @@ def main(cfg: DictConfig) -> None:
         val_sampler.set_epoch(epoch)
         train_dataloader.dataset.set_indices(list(train_sampler))
         val_dataloader.dataset.set_indices(list(val_sampler))
-
-        initial_integral_factor = initial_integral_factor_orig
 
         if epoch > 250:
             surface_scaling_loss = 1.0 * cfg.model.surf_loss_scaling
@@ -545,11 +510,8 @@ def main(cfg: DictConfig) -> None:
             gpu_handle=gpu_handle,
             epoch_index=epoch,
             device=dist.device,
-            integral_scaling_factor=initial_integral_factor,
             loss_fn_type=cfg.model.loss_function,
-            vol_loss_scaling=cfg.model.vol_loss_scaling,
             surf_loss_scaling=surface_scaling_loss,
-            vol_factors=vol_factors,
             autocast_enabled=cfg.train.amp.enabled,
             grad_clip_enabled=cfg.train.amp.clip_grad,
             grad_max_norm=cfg.train.amp.grad_max_norm,
@@ -570,11 +532,8 @@ def main(cfg: DictConfig) -> None:
             epoch_index=epoch,
             use_sdf_basis=cfg.model.use_sdf_in_basis_func,
             use_surface_normals=cfg.model.use_surface_normals,
-            integral_scaling_factor=initial_integral_factor,
             loss_fn_type=cfg.model.loss_function,
-            vol_loss_scaling=cfg.model.vol_loss_scaling,
             surf_loss_scaling=surface_scaling_loss,
-            vol_factors=vol_factors,
             autocast_enabled=cfg.train.amp.enabled,
         )
 
@@ -584,7 +543,6 @@ def main(cfg: DictConfig) -> None:
             f"LOSS train {avg_loss:.5f} "
             f"valid {avg_vloss:.5f} "
             f"Current lr {scheduler.get_last_lr()[0]} "
-            f"Integral factor {initial_integral_factor}"
         )
 
         if dist.rank == 0:
