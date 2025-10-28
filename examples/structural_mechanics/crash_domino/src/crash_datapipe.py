@@ -54,6 +54,7 @@ class CrashDataset(Dataset):
         },
         device: int = 0,
         model_type=None,
+        transient_scheme="explicit",
     ):
         if isinstance(input_dir, str):
             input_dir = Path(input_dir)
@@ -78,6 +79,7 @@ class CrashDataset(Dataset):
 
         self.device = device
         self.model_type = model_type
+        self.transient_scheme = transient_scheme
 
     def __len__(self):
         return len(self.filenames)
@@ -99,8 +101,6 @@ class CrashDataset(Dataset):
         stl_sizes = np.array(stl_sizes.cell_data["Area"])
         stl_centers = np.array(mesh_displacement.cell_centers().points)
 
-        length_scale = np.amax(np.amax(stl_vertices, 0) - np.amin(stl_vertices, 0))
-
         cell_data = mesh_displacement.point_data_to_cell_data()
         surface_coordinates_centers = cell_data.cell_centers().points
         surface_normals = np.array(cell_data.cell_normals)
@@ -109,13 +109,13 @@ class CrashDataset(Dataset):
         )
         surface_sizes = np.array(surface_sizes.cell_data["Area"])
         timesteps, displacement_data, magnitude_data = get_time_series_data(mesh_displacement, data_prefix="displacement")
-        surface_fields = displacement_data
+        surface_fields = displacement_data  #Displacements are from the starting position, not the previous timestep
         surface_coordinates = mesh_displacement.points
 
         surface_coordinates_all = []
         surface_normals_all = []
         surface_sizes_all = []
-        for i in range(1, surface_fields.shape[0]):
+        for i in range(surface_fields.shape[0]):
             surface_coordinates_all.append(surface_coordinates + surface_fields[i])
             surface_normals_all.append(surface_normals)
             surface_sizes_all.append(surface_sizes)
@@ -126,6 +126,17 @@ class CrashDataset(Dataset):
         surface_coordinates = np.concatenate([np.expand_dims(surface_coordinates, 0), surface_coordinates_all], axis=0)
         surface_normals = np.concatenate([np.expand_dims(surface_normals, 0), surface_normals_all], axis=0)
         surface_sizes = np.concatenate([np.expand_dims(surface_sizes, 0), surface_sizes_all], axis=0)
+
+        # For implicit scheme, we need to add the displacements from the previous timestep to the current position
+        if self.transient_scheme == "implicit":
+            surface_fields_new = []
+            for i in range(surface_coordinates.shape[0]-1):
+                surface_fields_new.append(surface_coordinates[i+1] - surface_coordinates[i])
+            surface_fields = np.asarray(surface_fields_new)
+
+        surface_coordinates = surface_coordinates[:-1]
+        surface_normals = surface_normals[:-1]
+        surface_sizes = surface_sizes[:-1]
  
         # Arrange global parameters reference in a list based on the type of the parameter
         global_params_reference_list = []

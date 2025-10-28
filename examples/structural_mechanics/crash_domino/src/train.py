@@ -16,7 +16,7 @@
 
 """
 This code defines a distributed pipeline for training the DoMINO model on
-CFD datasets. It includes the computation of scaling factors, instantiating
+Crash datasets. It includes the computation of scaling factors, instantiating
 the DoMINO model and datapipe, automatically loading the most recent checkpoint,
 training the model in parallel using DistributedDataParallel across multiple
 GPUs, calculating the loss and updating model parameters using mixed precision.
@@ -189,7 +189,6 @@ def train_epoch(
                     loss_fn_type,
                     surf_loss_scaling,
                 )
-
                 
                 local_metrics = compute_l2(
                     prediction_surf, sampled_batched, dataloader

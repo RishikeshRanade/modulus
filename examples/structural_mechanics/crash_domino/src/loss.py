@@ -45,10 +45,7 @@ def loss_fn(
     """
     mask = abs(target - padded_value) > 1e-3
 
-    if loss_type == "rmse":
-        dims = (0, 1, 2)
-    else:
-        dims = (0, 1, 2)
+    dims = (0, 1, 2)
 
     num = torch.sum(mask * (output - target) ** 2.0, dims)
     if loss_type == "rmse":

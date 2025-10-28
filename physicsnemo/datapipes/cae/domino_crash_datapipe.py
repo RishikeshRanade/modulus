@@ -212,8 +212,6 @@ class DoMINODataPipe(Dataset):
         if self.config.mesh_type == "node":
             if self.config.use_surface_normals is True or self.config.use_surface_area is True:
                 raise ValueError("use_surface_normals and use_surface_area must be False when mesh_type is node")
-            self.use_surface_area = False
-            self.use_surface_normals = False
 
         # Set devices for the preprocessing and IO target
         self.preproc_device = (

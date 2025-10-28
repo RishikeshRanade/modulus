@@ -88,7 +88,6 @@ class DoMINO(nn.Module):
     >>> cfg.model.model_type = "combined"
     >>> model = DoMINO(
     ...         input_features=3,
-    ...         output_features_vol=5,
     ...         output_features_surf=4,
     ...         model_parameters=cfg.model
     ...     ).to(device)
@@ -142,7 +141,6 @@ class DoMINO(nn.Module):
     def __init__(
         self,
         input_features: int,
-        output_features_vol: int | None = None,
         output_features_surf: int | None = None,
         global_features: int = 2,
         nodal_surface_features: int = 0,
@@ -187,27 +185,27 @@ class DoMINO(nn.Module):
         self.combined_unet_surf = UNet(
             in_channels=in_channels,
             out_channels=out_channels_surf,
-                model_depth=3,
-                feature_map_channels=[
-                    h,
-                    2 * h,
-                    4 * h,
-                ],
-                num_conv_blocks=1,
-                kernel_size=3,
-                stride=1,
-                conv_activation=self.activation_processor,
-                padding=1,
-                padding_mode="zeros",
-                pooling_type="MaxPool3d",
-                pool_size=2,
-                normalization="layernorm",
-                use_attn_gate=True,
-                attn_decoder_feature_maps=[4 * h, 2 * h],
-                attn_feature_map_channels=[2 * h, h],
-                attn_intermediate_channels=4 * h,
-                gradient_checkpointing=True,
-            )
+            model_depth=3,
+            feature_map_channels=[
+                h,
+                2 * h,
+                4 * h,
+            ],
+            num_conv_blocks=1,
+            kernel_size=3,
+            stride=1,
+            conv_activation=self.activation_processor,
+            padding=1,
+            padding_mode="zeros",
+            pooling_type="MaxPool3d",
+            pool_size=2,
+            normalization="layernorm",
+            use_attn_gate=True,
+            attn_decoder_feature_maps=[4 * h, 2 * h],
+            attn_feature_map_channels=[2 * h, h],
+            attn_intermediate_channels=4 * h,
+            gradient_checkpointing=True,
+        )
         self.global_features = global_features
 
         if self.output_features_surf is None:

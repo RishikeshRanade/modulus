@@ -56,7 +56,7 @@ def get_num_vars(cfg: dict, model_type: Literal["surface"]):
 
     num_surf_vars = 0
     surface_variable_names = []
-    if model_type == "surface" or model_type == "combined":
+    if model_type == "surface":
         surface_variable_names = list(cfg.variables.surface.solution.keys())
         num_surf_vars = 0
         for j in surface_variable_names:
@@ -271,7 +271,7 @@ class ScalingFactors:
 
 def load_scaling_factors(
     cfg: DictConfig, logger=None
-) -> tuple[torch.Tensor, torch.Tensor]:
+) -> torch.Tensor:
     """Load scaling factors from the configuration."""
     pickle_path = os.path.join(cfg.data.scaling_factors)
 

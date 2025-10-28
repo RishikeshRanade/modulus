@@ -15,7 +15,7 @@
 # limitations under the License.
 
 """
-This code runs the data processing in parallel to load OpenFoam files, process them 
+This code runs the data processing in parallel to load Crash Dataset files, process them 
 and save in the npy format for faster processing in the DoMINO datapipes. Several 
 parameters such as number of processors, input and output paths, etc. can be 
 configured in config.yaml in the data_processing tab.
@@ -78,6 +78,7 @@ def main(cfg: DictConfig):
         global_params_types=global_params_types,
         global_params_reference=global_params_reference,
         model_type=cfg.model.model_type,
+        transient_scheme=cfg.model.transient_scheme,
     )
     output_dir = cfg.data_processor.output_dir
     create_directory(output_dir)
