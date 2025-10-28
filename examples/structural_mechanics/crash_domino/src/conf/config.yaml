@@ -37,9 +37,9 @@ resume_dir: ${output}/models
 # │            Data Preprocessing             │
 # └───────────────────────────────────────────┘  
 data_processor: # Data processor configurable parameters
-  output_dir: /user/aws_data_all/
-  input_dir: /data/drivaer_aws/drivaer_data_full/
-  cached_dir: /user/cached/drivaer_aws/drivaer_data_full/
+  output_dir: /user/crash_data_all/
+  input_dir: /user/data/crash_data_all/
+  cached_dir: /user/cached/crash_data_all/
   use_cache: false
   num_processors: 12
 
@@ -60,14 +60,11 @@ variables:
 # │         Data Configs                      │
 # └───────────────────────────────────────────┘  
 data: # Input directory for training and validation data
-  input_dir: /user/data/aws_data_all/
-  input_dir_val: /user/data/aws_data_all_val/
-  bounding_box: # Bounding box dimensions for computational domain
-    min: [560, -840, 650]
-    max: [3350 , 850, 1320]
+  input_dir: /user/data/crash_data_all/
+  input_dir_val: /user/data/crash_data_all_val/
   bounding_box_surface: # Bounding box dimensions for car surface
-    min: [560, -840, 650]
-    max: [3350, 0, 1320]
+    min: [-1, -1, -1]
+    max: [1, 1, 1]
   gpu_preprocessing: true
   gpu_output: true
   normalize_coordinates: true
