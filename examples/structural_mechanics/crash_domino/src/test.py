@@ -17,12 +17,12 @@
 """
 This code defines a distributed pipeline for testing the DoMINO model on
 Crash datasets. It includes the instantiating the DoMINO model and datapipe,
-automatically loading the most recent checkpoint, reading the VTP/STL
+automatically loading the most recent checkpoint, reading the VTP/VTU/STL
 testing files, calculation of parameters required for DoMINO model and
 evaluating the model in parallel using DistributedDataParallel across multiple
 GPUs. This is a common recipe that enables training of surface model.
 The model predictions are loaded in
-the the VTP/STL files and saved in the specified directory. The eval tab in
+the the VTP/VTU/STL files and saved in the specified directory. The eval tab in
 config.yaml can be used to specify the input and output directories.
 """
 
@@ -54,9 +54,9 @@ import vtk
 from vtk.util import numpy_support
 
 from physicsnemo.distributed import DistributedManager
-from physicsnemo.datapipes.cae.domino_crash_datapipe import DoMINODataPipe
-from physicsnemo.models.domino_crash.model import DoMINO
-from physicsnemo.models.domino_crash.geometry_rep import scale_sdf
+from physicsnemo.datapipes.cae.domino_datapipe_transient import DoMINODataPipe
+from physicsnemo.models.domino_transient.model import DoMINO
+from physicsnemo.models.domino_transient.geometry_rep import scale_sdf
 from physicsnemo.utils.domino.utils import *
 from physicsnemo.utils.domino.vtk_file_utils import *
 from physicsnemo.utils.sdf import signed_distance_field
@@ -71,9 +71,7 @@ def loss_fn(output, target):
 
 
 def test_step(data_dict, model, device, cfg, surf_factors):
-    avg_tloss_surf = 0.0
-    running_tloss_surf = 0.0
-
+    
     output_features_surf = True
 
     with torch.no_grad():
@@ -235,7 +233,18 @@ def main(cfg: DictConfig):
     DistributedManager.initialize()
     dist = DistributedManager()
 
-    if model_type == "surface":
+    if model_type == "volume" or model_type == "combined":
+        volume_variable_names = list(cfg.variables.volume.solution.keys())
+        num_vol_vars = 0
+        for j in volume_variable_names:
+            if cfg.variables.volume.solution[j] == "vector":
+                num_vol_vars += 3
+            else:
+                num_vol_vars += 1
+    else:
+        num_vol_vars = None
+
+    if model_type == "surface" or model_type == "combined":
         surface_variable_names = list(cfg.variables.surface.solution.keys())
         num_surf_vars = 0
         for j in surface_variable_names:
@@ -259,11 +268,13 @@ def main(cfg: DictConfig):
     ######################################################
     pickle_path = os.path.join(cfg.data.scaling_factors)
 
-    surf_factors = load_scaling_factors(cfg)
+    vol_factors, surf_factors = load_scaling_factors(cfg)
+    print("Vol factors:", vol_factors)
     print("Surf factors:", surf_factors)
 
     model = DoMINO(
         input_features=3,
+        output_features_vol=num_vol_vars,
         output_features_surf=num_surf_vars,
         global_features=global_features,
         model_parameters=cfg.model,
@@ -448,7 +459,7 @@ def main(cfg: DictConfig):
             surface_coordinates_all = []
             surface_normals_all = []
             surface_sizes_all = []
-            for i in range(1, surface_fields.shape[0]):
+            for i in range(surface_fields.shape[0]):
                 surface_coordinates_all.append(surface_coordinates + surface_fields[i])
                 surface_normals_all.append(surface_normals)
                 surface_sizes_all.append(surface_sizes)
@@ -459,6 +470,28 @@ def main(cfg: DictConfig):
             surface_coordinates = np.concatenate([np.expand_dims(surface_coordinates, 0), surface_coordinates_all], axis=0)
             surface_normals = np.concatenate([np.expand_dims(surface_normals, 0), surface_normals_all], axis=0)
             surface_sizes = np.concatenate([np.expand_dims(surface_sizes, 0), surface_sizes_all], axis=0)
+
+            # For implicit scheme, we need to add the displacements from the previous timestep to the current position
+            if cfg.model.transient_scheme == "implicit":
+                surface_fields_new = []
+                for i in range(surface_coordinates.shape[0]-1):
+                    surface_fields_new.append(surface_coordinates[i+1] - surface_coordinates[i])
+                surface_fields = np.asarray(surface_fields_new)
+
+            surface_coordinates = surface_coordinates[:-1]
+            surface_normals = surface_normals[:-1]
+            surface_sizes = surface_sizes[:-1]
+            # print(surface_coordinates.shape, surface_normals.shape, surface_sizes.shape, surface_fields.shape)
+            # exit()
+            if cfg.model.transient_scheme == "explicit":
+                surface_coordinates_init = surface_coordinates[0]
+                surface_normals_init = surface_normals[0]
+                surface_sizes_init = surface_sizes[0]
+
+                for j in range(surface_coordinates.shape[0]):
+                    surface_coordinates[j] = surface_coordinates_init
+                    surface_normals[j] = surface_normals_init
+                    surface_sizes[j] = surface_sizes_init
 
             surface_coordinates = (
                 torch.from_numpy(surface_coordinates).to(torch.float32).to(dist.device)
@@ -526,8 +559,6 @@ def main(cfg: DictConfig):
             pos_surface_center_of_mass = None
 
         geom_centers = stl_vertices
-        # print(f"Geom centers max: {np.amax(geom_centers, axis=0)}, min: {np.amin(geom_centers, axis=0)}")
-
         
         if model_type == "surface":
             data_dict = {
@@ -588,6 +619,7 @@ def main(cfg: DictConfig):
         
         prediction_surf = prediction_surf.cpu().numpy()
         surface_fields = surface_fields.cpu().numpy()
+        import pdb; pdb.set_trace()
         surface_coordinates_initial = surface_coordinates_initial.cpu().numpy()
         timesteps = unnormalize(timesteps, t_max, t_min)
         timesteps = timesteps.cpu().numpy()
@@ -646,65 +678,6 @@ def main(cfg: DictConfig):
         with open(pvd_filename, "w") as f:
             f.write(pvd_content)
 
-        # # Predict deformation
-        # vtp_pred_save_path = os.path.join(
-        #     pred_save_path, dirname[:-4], "predicted_deformed"
-        # )
-        # create_directory(vtp_pred_save_path)
-        # vtp_true_save_path = os.path.join(
-        #     pred_save_path, dirname[:-4], "true_deformed"
-        # )
-        # create_directory(vtp_true_save_path)
-        # mesh_stl_deformed = mesh_stl.copy()
-        # initial_field_pred = mesh_stl_deformed.points
-        # initial_field_true = mesh_stl_deformed.points
-
-        # for i in range(1, cfg.model.integration_steps + 1):
-        #     vtp_pred_save_path_new = os.path.join(
-        #             vtp_pred_save_path, f"boundary_predicted_{i}.vtp"
-        #         )
-        #     vtp_true_save_path_new = os.path.join(
-        #         vtp_true_save_path, f"boundary_true_{i}.vtp"
-        #     )
-        #     vector_field_name = f"displacement"
-
-        #     initial_field_pred += (prediction_surf[i, :, :] - prediction_surf[i-1, :, :])
-        #     initial_field_true += (surface_fields[i, :, :] - surface_fields[i-1, :, :])
-
-        #     mesh_stl_deformed.points = initial_field_pred
-        #     mesh_stl_deformed[vector_field_name] = prediction_surf[i, :, :]
-        #     mesh_stl_deformed.save(vtp_pred_save_path_new)
-        #     mesh_stl_deformed.points = initial_field_true
-        #     mesh_stl_deformed[vector_field_name] = surface_fields[i, :, :]
-        #     mesh_stl_deformed.save(vtp_true_save_path_new)
-
-        # pvd_content = """<?xml version="1.0"?>
-        # <VTKFile type="Collection" version="0.1" byte_order="LittleEndian" compressor="vtkZLibDataCompressor">
-        # <Collection>
-        # """
-        # for timestep in range(1, 21):
-        #     pvd_content += f'    <DataSet timestep="{timestep}" file="{os.path.basename(f"boundary_predicted_{timestep}.vtp")}"/>\n'
-        # pvd_content += """  </Collection>
-        # </VTKFile>
-        # """
-       
-        # pvd_filename = os.path.join(os.path.join(vtp_pred_save_path, "predicted.pvd"))
-        # with open(pvd_filename, "w") as f:
-        #     f.write(pvd_content)
-
-        # pvd_content = """<?xml version="1.0"?>
-        # <VTKFile type="Collection" version="0.1" byte_order="LittleEndian" compressor="vtkZLibDataCompressor">
-        # <Collection>
-        # """
-        # for timestep in range(1, 21):
-        #     pvd_content += f'    <DataSet timestep="{timestep}" file="{os.path.basename(f"boundary_true_{timestep}.vtp")}"/>\n'
-        # pvd_content += """  </Collection>
-        # </VTKFile>
-        # """
-        # pvd_filename = os.path.join(os.path.join(vtp_true_save_path, "truth.pvd"))
-        # with open(pvd_filename, "w") as f:
-        #     f.write(pvd_content)
-
         if prediction_surf is not None:
 
             for ii in range(surface_fields.shape[0]):
@@ -751,6 +724,7 @@ def main(cfg: DictConfig):
                     dirname,
                     error_max_displacement,
                 )
+            exit()
 
     l2_surface_all = np.asarray(l2_surface_all)  # num_files, 4
     l2_surface_mean = np.mean(l2_surface_all, 0)

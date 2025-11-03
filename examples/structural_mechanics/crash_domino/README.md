@@ -22,6 +22,20 @@ discrete points.
 A preprint describing additional details about the model architecture can be found here
 [paper](https://arxiv.org/abs/2501.13350).
 
+## Recent Updates
+
+### Model Refactoring (Latest)
+
+The DoMINO model architecture has been significantly refactored to improve code quality:
+
+- **Modular Forward Pass**: The monolithic forward method has been decomposed into 12 focused helper methods, each with a single responsibility
+- **Separation of Concerns**: Clear distinction between geometry encodings and positional encodings
+- **Improved Documentation**: Comprehensive docstrings for all methods with detailed parameter descriptions
+- **Enhanced Maintainability**: Easier to test, debug, and extend individual components
+- **Backward Compatible**: No changes to the public API - existing training scripts work without modification
+
+See the [Model Architecture and Code Structure](#model-architecture-and-code-structure) section for details.
+
 ## Prerequisites
 
 Install the required dependencies by running below:
@@ -286,6 +300,49 @@ The test script will output detailed metrics including:
 Results can be visualized in Paraview using the generated VTP files with time-series data.
 
 
+## Model Architecture and Code Structure
+
+The DoMINO model has been refactored with improved modularity and maintainability.
+The forward pass is now organized into focused, well-documented helper methods
+that separate different computational concerns:
+
+### Key Architectural Components
+
+1. **Feature Validation**: `_validate_and_extract_features()`
+   - Validates nodal surface, volume, and geometry features
+   - Ensures dimensional consistency
+
+2. **Geometry Encodings**: 
+   - `_compute_volume_encodings()` - Computes volume geometry representations
+   - `_compute_surface_encodings()` - Computes surface geometry representations
+   - Handles grid normalization and spatial structure
+
+3. **Positional Encodings**:
+   - `_compute_volume_positional_encoding()` - SDF-based and positional features for volume
+   - `_compute_surface_positional_encoding()` - Positional features for surface
+   - Applies Fourier-based positional encoders
+
+4. **Local Geometry Processing**:
+   - `_compute_volume_local_encodings()` - Local volume geometry features
+   - `_compute_surface_local_encodings()` - Local surface geometry features
+   - Supports both transient and steady-state simulations
+
+5. **Solution Computation**:
+   - `_compute_volume_output_implicit/explicit()` - Volume solutions
+   - `_compute_surface_output_implicit/explicit()` - Surface solutions
+   - Handles both implicit and explicit time integration schemes
+
+### Benefits of Modular Architecture
+
+- **Improved Testability**: Each component can be tested independently
+- **Better Maintainability**: Changes are localized to specific methods
+- **Enhanced Readability**: Clear separation of concerns makes code easier to understand
+- **Flexible Development**: Easy to modify geometry vs positional encoding independently
+
+For developers extending DoMINO, this modular structure makes it straightforward
+to customize specific components (e.g., adding new encoding types) without
+affecting the entire pipeline.
+
 ### DoMINO model pipeline for inference on test samples
 
 After training is completed, `test.py` script can be used to run inference on
@@ -312,6 +369,13 @@ test samples. Follow the below steps to run the `test.py`
 This repository includes examples of **DoMINO** training on crash simulation datasets.
 However, many use cases require training **DoMINO** on a **custom dataset**.
 The steps below outline the process.
+
+> **Note for Developers**: The refactored model architecture makes it easier to customize
+> specific components. For example, if you need custom positional encodings, you can modify
+> `_compute_volume_positional_encoding()` or `_compute_surface_positional_encoding()` without
+> affecting geometry encoding logic. Similarly, custom geometry representations can be added
+> by modifying the `_compute_*_encodings()` methods. All helper methods are well-documented
+> with clear input/output specifications.
 
 1. Reorganize your dataset to have a consistent directory structure. The
    raw data directory should contain a separate directory for each simulation.

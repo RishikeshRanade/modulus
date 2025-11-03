@@ -15,7 +15,7 @@
 # limitations under the License.
 
 """
-This is the datapipe to read VTK files (vtp/vtu/stl) and save them as point clouds 
+This is the datapipe to read OpenFoam files (vtp/vtu/stl) and save them as point clouds 
 in npy format. 
 
 """
@@ -35,7 +35,7 @@ from utils import extract_index_from_filename, extract_time_series_info, get_tim
 
 class CrashDataset(Dataset):
     """
-    Datapipe for converting VTK dataset to npy
+    Datapipe for converting openfoam dataset to npy
 
     """
 
@@ -46,6 +46,7 @@ class CrashDataset(Dataset):
             "pMean",
             "wallShearStress",
         ],
+        volume_variables: Optional[list] = ["UMean", "pMean"],
         global_params_types: Optional[dict] = {
             "stress": "vector",
         },
@@ -54,7 +55,6 @@ class CrashDataset(Dataset):
         },
         device: int = 0,
         model_type=None,
-        transient_scheme="explicit",
     ):
         if isinstance(input_dir, str):
             input_dir = Path(input_dir)
@@ -71,6 +71,7 @@ class CrashDataset(Dataset):
         self.indices = np.array(len(self.filenames))
 
         self.surface_variables = surface_variables
+        self.volume_variables = volume_variables
 
         self.global_params_types = global_params_types
         self.global_params_reference = global_params_reference

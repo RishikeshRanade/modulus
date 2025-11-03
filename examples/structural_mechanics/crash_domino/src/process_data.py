@@ -15,7 +15,7 @@
 # limitations under the License.
 
 """
-This code runs the data processing in parallel to load Crash Dataset files, process them 
+This code runs the data processing in parallel to load OpenFoam files, process them 
 and save in the npy format for faster processing in the DoMINO datapipes. Several 
 parameters such as number of processors, input and output paths, etc. can be 
 configured in config.yaml in the data_processing tab.
@@ -53,6 +53,14 @@ def process_files(*args_list):
 def main(cfg: DictConfig):
     print(f"Config summary:\n{OmegaConf.to_yaml(cfg, sort_keys=True)}")
     phase = "train"
+    volume_variable_names = list(cfg.variables.volume.solution.keys())
+    num_vol_vars = 0
+    for j in volume_variable_names:
+        if cfg.variables.volume.solution[j] == "vector":
+            num_vol_vars += 3
+        else:
+            num_vol_vars += 1
+
     surface_variable_names = list(cfg.variables.surface.solution.keys())
     num_surf_vars = 0
     for j in surface_variable_names:
@@ -74,11 +82,12 @@ def main(cfg: DictConfig):
 
     fm_data = CrashDataset(
         input_dir=cfg.data_processor.input_dir,
+        volume_variables=volume_variable_names,
         surface_variables=surface_variable_names,
         global_params_types=global_params_types,
         global_params_reference=global_params_reference,
         model_type=cfg.model.model_type,
-        transient_scheme=cfg.model.transient_scheme,
+        transient_scheme=cfg.model.transient_scheme
     )
     output_dir = cfg.data_processor.output_dir
     create_directory(output_dir)

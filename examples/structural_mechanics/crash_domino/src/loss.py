@@ -62,6 +62,7 @@ def loss_fn(
 
 
 def compute_loss_dict(
+    prediction_vol: torch.Tensor,
     prediction_surf: torch.Tensor,
     batch_inputs: dict,
     loss_fn_type: dict,
@@ -71,6 +72,7 @@ def compute_loss_dict(
     Compute the loss terms in a single function call.
 
     Computes:
+    - Volume loss if prediction_vol is not None
     - Surface loss if prediction_surf is not None
     - Total loss as a weighted sum of the above
 
@@ -81,6 +83,18 @@ def compute_loss_dict(
     nvtx.range_push("Loss Calculation")
     total_loss_terms = []
     loss_dict = {}
+
+    if prediction_vol is not None:
+        target_vol = batch_inputs["volume_fields"]
+            
+        loss_vol = loss_fn(
+            prediction_vol,
+            target_vol,
+            loss_fn_type.loss_type,
+            padded_value=-10,
+        )
+        loss_dict["loss_vol"] = loss_vol
+        total_loss_terms.append(loss_vol)
 
     if prediction_surf is not None:
         target_surf = batch_inputs["surface_fields"]

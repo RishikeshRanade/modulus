@@ -56,12 +56,12 @@ from physicsnemo.distributed import DistributedManager
 from physicsnemo.launch.utils import load_checkpoint, save_checkpoint
 from physicsnemo.launch.logging import PythonLogger, RankZeroLoggingWrapper
 
-from physicsnemo.datapipes.cae.domino_crash_datapipe import (
+from physicsnemo.datapipes.cae.domino_datapipe_transient import (
     DoMINODataPipe,
     create_domino_dataset,
 )
 
-from physicsnemo.models.domino_crash.model import DoMINO
+from physicsnemo.models.domino_transient.model import DoMINO
 from physicsnemo.utils.domino.utils import *
 
 from utils import ScalingFactors, get_keys_to_read, coordinate_distributed_environment
@@ -92,7 +92,9 @@ def validation_step(
     use_sdf_basis=False,
     use_surface_normals=False,
     loss_fn_type=None,
+    vol_loss_scaling=None,
     surf_loss_scaling=None,
+    vol_factors: torch.Tensor | None = None,
     autocast_enabled=None,
 ):
     dm = DistributedManager()
@@ -104,9 +106,10 @@ def validation_step(
             sampled_batched = dict_to_device(sample_batched, device)
 
             with autocast("cuda", enabled=autocast_enabled, cache_enabled=False):
-                prediction_surf = model(sampled_batched)
+                prediction_vol, prediction_surf = model(sampled_batched)
 
                 loss, loss_dict = compute_loss_dict(
+                    prediction_vol,
                     prediction_surf,
                     sampled_batched,
                     loss_fn_type,
@@ -115,7 +118,7 @@ def validation_step(
 
             running_vloss += loss.item()
             local_metrics = compute_l2(
-                prediction_surf, sampled_batched, dataloader
+                prediction_surf, prediction_vol, sampled_batched, dataloader
             )
             if metrics is None:
                 metrics = local_metrics
@@ -181,17 +184,18 @@ def train_epoch(
             io_end_time = time.perf_counter()
             with autocast("cuda", enabled=autocast_enabled, cache_enabled=False):
                 with nvtx.range("Model Forward Pass"):
-                    prediction_surf = model(sampled_batched)
+                    prediction_vol, prediction_surf = model(sampled_batched)
 
                 loss, loss_dict = compute_loss_dict(
+                    prediction_vol,
                     prediction_surf,
                     sampled_batched,
                     loss_fn_type,
                     surf_loss_scaling,
                 )
-                
+
                 local_metrics = compute_l2(
-                    prediction_surf, sampled_batched, dataloader
+                    prediction_surf, prediction_vol, sampled_batched, dataloader
                 )
                 if metrics is None:
                     metrics = local_metrics
@@ -302,18 +306,24 @@ def main(cfg: DictConfig) -> None:
     ######################################################
     # Get scaling factors - precompute them if this fails!
     ######################################################
+    # vol_factors, surf_factors = load_scaling_factors(cfg)
     try:
-        surf_factors = load_scaling_factors(cfg)
+        vol_factors, surf_factors = load_scaling_factors(cfg)
     except FileNotFoundError:
         surf_factors = None
-    if surf_factors is None:
+        vol_factors = None
+
+    if surf_factors is None and (cfg.model.model_type == "surface" or cfg.model.model_type == "combined"):
+        raise FileNotFoundError(f"Scaling factors not found at: {cfg.data.scaling_factors}; please run compute_statistics.py to compute them.")
+
+    if vol_factors is None and (cfg.model.model_type == "volume" or cfg.model.model_type == "combined"):
         raise FileNotFoundError(f"Scaling factors not found at: {cfg.data.scaling_factors}; please run compute_statistics.py to compute them.")
 
     ######################################################
     # Configure the model
     ######################################################
     model_type = cfg.model.model_type
-    num_surf_vars, num_global_features = get_num_vars(cfg, model_type)
+    num_vol_vars, num_surf_vars, num_global_features = get_num_vars(cfg, model_type)
 
     ######################################################
     # Configure the dataset
@@ -341,6 +351,7 @@ def main(cfg: DictConfig) -> None:
         phase="train",
         keys_to_read=keys_to_read,
         keys_to_read_if_available=keys_to_read_if_available,
+        vol_factors=vol_factors,
         surf_factors=surf_factors,
         device_mesh=domain_mesh,
         placements=placements,
@@ -360,6 +371,7 @@ def main(cfg: DictConfig) -> None:
         phase="val",
         keys_to_read=keys_to_read,
         keys_to_read_if_available=keys_to_read_if_available,
+        vol_factors=vol_factors,
         surf_factors=surf_factors,
         device_mesh=domain_mesh,
         placements=placements,
@@ -379,6 +391,7 @@ def main(cfg: DictConfig) -> None:
     ######################################################
     model = DoMINO(
         input_features=3,
+        output_features_vol=num_vol_vars,
         output_features_surf=num_surf_vars,
         global_features=num_global_features,
         model_parameters=cfg.model,
@@ -444,9 +457,11 @@ def main(cfg: DictConfig) -> None:
     epoch_number = 0
 
     model_save_path = os.path.join(cfg.output, "models")
+    param_save_path = os.path.join(cfg.output, "param")
     best_model_path = os.path.join(model_save_path, "best_model")
     if dist.rank == 0:
         create_directory(model_save_path)
+        create_directory(param_save_path)
         create_directory(best_model_path)
 
     if dist.world_size > 1:
