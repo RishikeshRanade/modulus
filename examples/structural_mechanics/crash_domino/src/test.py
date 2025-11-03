@@ -619,7 +619,7 @@ def main(cfg: DictConfig):
         
         prediction_surf = prediction_surf.cpu().numpy()
         surface_fields = surface_fields.cpu().numpy()
-        import pdb; pdb.set_trace()
+
         surface_coordinates_initial = surface_coordinates_initial.cpu().numpy()
         timesteps = unnormalize(timesteps, t_max, t_min)
         timesteps = timesteps.cpu().numpy()
@@ -724,7 +724,6 @@ def main(cfg: DictConfig):
                     dirname,
                     error_max_displacement,
                 )
-            exit()
 
     l2_surface_all = np.asarray(l2_surface_all)  # num_files, 4
     l2_surface_mean = np.mean(l2_surface_all, 0)
