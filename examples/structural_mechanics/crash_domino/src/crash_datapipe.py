@@ -55,6 +55,7 @@ class CrashDataset(Dataset):
         },
         device: int = 0,
         model_type=None,
+        transient_scheme="explicit",
     ):
         if isinstance(input_dir, str):
             input_dir = Path(input_dir)
@@ -177,8 +178,8 @@ class CrashDataset(Dataset):
             "stl_faces": np.float32(mesh_indices_flattened),
             "stl_areas": np.float32(stl_sizes),
             "surface_mesh_centers": np.float32(surface_coordinates),
-            "surface_normals": np.float32(surface_normals),
-            "surface_areas": np.float32(surface_sizes),
+            # "surface_normals": np.float32(surface_normals),
+            # "surface_areas": np.float32(surface_sizes),
             "surface_fields": np.float32(surface_fields),
             "surface_features": np.float32(surface_coordinates), # This can be thickness and material properties on nodes
             "geometry_features": np.float32(stl_vertices), # This can be thickness and material properties on nodes

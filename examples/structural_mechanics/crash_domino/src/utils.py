@@ -132,8 +132,8 @@ def get_keys_to_read(
     # Surface keys:
     surface_keys = [
         "surface_mesh_centers",
-        "surface_normals",
-        "surface_areas",
+        # "surface_normals",
+        # "surface_areas",
     ]
     if get_ground_truth:
         surface_keys.append("surface_fields")

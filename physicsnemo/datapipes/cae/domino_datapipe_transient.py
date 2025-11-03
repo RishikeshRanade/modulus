@@ -417,8 +417,10 @@ class DoMINODataPipe(Dataset):
         ########################################################################
         if self.config.mesh_type == "element":
             idx = surface_sizes > 0
-            surface_sizes = surface_sizes[idx]
-            surface_normals = surface_normals[idx]
+            if surface_sizes is not None:
+                surface_sizes = surface_sizes[idx]
+            if surface_normals is not None:
+                surface_normals = surface_normals[idx]
             surface_coordinates = surface_coordinates[idx]
             if surface_fields is not None:
                 surface_fields = surface_fields[idx]
@@ -436,8 +438,9 @@ class DoMINODataPipe(Dataset):
             ids_in_bbox = ids_in_bbox.all(dim=-1)
 
             surface_coordinates = surface_coordinates[:, ids_in_bbox]
-            if self.config.mesh_type == "element":
+            if self.config.mesh_type == "element" and surface_normals is not None:
                 surface_normals = surface_normals[:, ids_in_bbox]
+            if self.config.mesh_type == "element" and surface_sizes is not None:
                 surface_sizes = surface_sizes[:, ids_in_bbox]
             if surface_fields is not None:
                 surface_fields = surface_fields[:, ids_in_bbox]
@@ -452,8 +455,15 @@ class DoMINODataPipe(Dataset):
 
         full_surface_coordinates = surface_coordinates
         full_surface_features = surface_features
-        full_surface_normals = surface_normals
-        full_surface_sizes = surface_sizes
+
+        if surface_normals is not None:
+            full_surface_normals = surface_normals
+        else:
+            full_surface_normals = None
+        if surface_sizes is not None:
+            full_surface_sizes = surface_sizes
+        else:
+            full_surface_sizes = None
 
         if self.config.sampling:
             # Perform the down sampling:
@@ -502,11 +512,11 @@ class DoMINODataPipe(Dataset):
 
             # Subsample the normals and sizes:
             if self.config.mesh_type == "element":
-                surface_normals = surface_normals[:, idx_surface]
-                surface_sizes = surface_sizes[:, idx_surface]
-            else:
-                surface_normals = surface_normals
-                surface_sizes = surface_sizes
+                if surface_normals is not None: 
+                    surface_normals = surface_normals[:, idx_surface]
+                if surface_sizes is not None:
+                    surface_sizes = surface_sizes[:, idx_surface]
+
             # Update the coordinates to the sampled points:
             surface_coordinates = surface_coordinates[:, idx_surface]
             if surface_features is not None:
@@ -518,16 +528,20 @@ class DoMINODataPipe(Dataset):
                     surface_coordinates = surface_coordinates[idx_time]
                     if surface_features is not None:
                         surface_features = surface_features[idx_time]
-                    if self.config.use_surface_normals:
+                    if surface_normals is not None:
                         surface_normals = surface_normals[idx_time]
-                    if self.config.use_surface_area:
+                    if surface_sizes is not None:
                         surface_sizes = surface_sizes[idx_time]
                 elif self.config.transient_scheme == "implicit":
                     surface_coordinates = surface_coordinates[idx_time_start:idx_time_start+self.config.time_points_sample]
                     if surface_features is not None:
                         surface_features = surface_features[idx_time_start:idx_time_start+self.config.time_points_sample]
-                    surface_normals = surface_normals[idx_time_start:idx_time_start+self.config.time_points_sample]
-                    surface_sizes = surface_sizes[idx_time_start:idx_time_start+self.config.time_points_sample]
+
+                    if surface_normals is not None:
+                        surface_normals = surface_normals[idx_time_start:idx_time_start+self.config.time_points_sample]
+
+                    if surface_sizes is not None:
+                        surface_sizes = surface_sizes[idx_time_start:idx_time_start+self.config.time_points_sample]
                 else:
                     raise ValueError(f"Invalid transient scheme: {self.config.transient_scheme}")
 
@@ -563,42 +577,37 @@ class DoMINODataPipe(Dataset):
                     raise ValueError(f"Invalid transient scheme: {self.config.transient_scheme}")
 
                 timesteps_neighbors = repeat_array(timesteps_sampled, self.config.num_surface_neighbors-1, axis=2, new_axis=True)
-                #surface_neighbors = torch.cat([surface_neighbors, timesteps_neighbors], axis=-1)
 
             if self.config.mesh_type == "element":
-                surface_neighbors_normals = full_surface_normals[:, neighbor_indices][:, :, 1:]
-                surface_neighbors_sizes = full_surface_sizes[:, neighbor_indices][:, :, 1:]
+                if full_surface_normals is not None:
+                    surface_neighbors_normals = full_surface_normals[:, neighbor_indices][:, :, 1:]
+                else:
+                    surface_neighbors_normals = None
+                if full_surface_sizes is not None:
+                    surface_neighbors_sizes = full_surface_sizes[:, neighbor_indices][:, :, 1:]
+                else:
+                    surface_neighbors_sizes = None
             else:
-                surface_neighbors_normals = surface_normals
-                surface_neighbors_sizes = surface_sizes
+                surface_neighbors_normals = None
+                surface_neighbors_sizes = None
 
             if self.config.transient:
                 if self.config.transient_scheme == "explicit":
-                    surface_neighbors_normals = surface_neighbors_normals[idx_time]
-                    surface_neighbors_sizes = surface_neighbors_sizes[idx_time]
+                    if surface_neighbors_normals is not None:
+                        surface_neighbors_normals = surface_neighbors_normals[idx_time]
+                    if surface_neighbors_sizes is not None:
+                        surface_neighbors_sizes = surface_neighbors_sizes[idx_time]
                 elif self.config.transient_scheme == "implicit":
-                    surface_neighbors_normals = surface_neighbors_normals[idx_time_start:idx_time_start+self.config.time_points_sample]
-                    surface_neighbors_sizes = surface_neighbors_sizes[idx_time_start:idx_time_start+self.config.time_points_sample]
+                    if surface_neighbors_normals is not None:
+                        surface_neighbors_normals = surface_neighbors_normals[idx_time_start:idx_time_start+self.config.time_points_sample]
+                    if surface_neighbors_sizes is not None:
+                        surface_neighbors_sizes = surface_neighbors_sizes[idx_time_start:idx_time_start+self.config.time_points_sample]
         else:
             surface_neighbors = surface_coordinates
             if surface_features is not None:
                 surface_neighbors_features = surface_features
             else:
                 surface_neighbors_features = None
-            if self.config.mesh_type == "element":
-                surface_neighbors_normals = surface_normals
-                surface_neighbors_sizes = surface_sizes
-            else:
-                surface_neighbors_normals = surface_normals
-                surface_neighbors_sizes = surface_sizes
-            
-            if self.config.transient:
-                if self.config.transient_scheme == "explicit":
-                    surface_neighbors_normals = surface_neighbors_normals[idx_time]
-                    surface_neighbors_sizes = surface_neighbors_sizes[idx_time]
-                elif self.config.transient_scheme == "implicit":
-                    surface_neighbors_normals = surface_neighbors_normals[idx_time_start:idx_time_start+self.config.time_points_sample]
-                    surface_neighbors_sizes = surface_neighbors_sizes[idx_time_start:idx_time_start+self.config.time_points_sample]
 
         # Better to normalize everything after the kNN and sampling
         if self.config.normalize_coordinates:
@@ -626,12 +635,18 @@ class DoMINODataPipe(Dataset):
                 "pos_surface_center_of_mass": pos_normals_com_surface,
                 "surface_mesh_centers": surface_coordinates,
                 "surface_mesh_neighbors": surface_neighbors,
-                "surface_normals": surface_normals,
-                "surface_neighbors_normals": surface_neighbors_normals,
-                "surface_areas": surface_sizes,
-                "surface_neighbors_areas": surface_neighbors_sizes,
             }
         )
+
+        if surface_normals is not None:
+            return_dict["surface_normals"] = surface_normals
+        if surface_sizes is not None:
+            return_dict["surface_areas"] = surface_sizes
+        if surface_neighbors_normals is not None:
+            return_dict["surface_neighbors_normals"] = surface_neighbors_normals
+        if surface_neighbors_sizes is not None:
+            return_dict["surface_neighbors_areas"] = surface_neighbors_sizes
+
         if surface_features is not None:
             return_dict["surface_features"] = surface_features
             return_dict["surface_neighbors_features"] = surface_neighbors_features
@@ -962,6 +977,17 @@ class DoMINODataPipe(Dataset):
                 surface_features_raw = data_dict["surface_features"]
             else:
                 surface_features_raw = None
+
+            if "surface_normals" in data_dict:
+                surface_normals_raw = data_dict["surface_normals"]
+            else:
+                surface_normals_raw = None
+
+            if "surface_areas" in data_dict:
+                surface_sizes_raw = data_dict["surface_areas"]
+            else:
+                surface_sizes_raw = None
+
             surface_dict = self.process_surface(
                 s_min,
                 s_max,
@@ -970,8 +996,8 @@ class DoMINODataPipe(Dataset):
                 center_of_mass=center_of_mass,
                 surf_grid=surf_grid,
                 surface_coordinates=data_dict["surface_mesh_centers"],
-                surface_normals=data_dict["surface_normals"],
-                surface_sizes=data_dict["surface_areas"],
+                surface_normals=surface_normals_raw,
+                surface_sizes=surface_sizes_raw,
                 stl_vertices=data_dict["stl_coordinates"],
                 stl_indices=mesh_indices_flattened,
                 surface_fields=surface_fields_raw,
@@ -1425,6 +1451,7 @@ def create_domino_dataset(
             volume_sample_from_disk=cfg.data.volume_sample_from_disk,
             num_surface_neighbors=cfg.model.num_neighbors_surface,
             surface_sampling_algorithm=cfg.model.surface_sampling_algorithm,
+            transient_scheme=cfg.model.transient_scheme,
             **overrides,
         )
 

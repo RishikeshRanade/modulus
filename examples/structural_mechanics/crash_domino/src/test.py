@@ -168,15 +168,12 @@ def test_step(data_dict, model, device, cfg, surf_factors):
                     if cfg.model.transient_scheme == "implicit":
                         for i in range(cfg.model.integration_steps):
                             if i == 0:
-                                surface_mesh_centers_batch_i = surface_mesh_centers_batch[:, i]
-                                surface_mesh_neighbors_batch_i = surface_mesh_neighbors_batch[:, i]
-                                prediction_surf[:, i, start_idx:end_idx] = surface_mesh_centers_batch_i[:, :, :3]
+                                surface_mesh_centers_batch_i = surface_mesh_centers_batch[:, i].clone()
+                                surface_mesh_neighbors_batch_i = surface_mesh_neighbors_batch[:, i].clone()
                             else:
                                 surface_mesh_centers_batch_i[:, :, :3] += tpredictions_batch
                                 for j in range(surface_mesh_neighbors_batch_i.shape[2]):
                                     surface_mesh_neighbors_batch_i[:, :, j, :3] += tpredictions_batch
-
-                                prediction_surf[:, i, start_idx:end_idx] = tpredictions_batch
 
                             tpredictions_batch = model.solution_calculator_surf(
                                 surface_mesh_centers_batch_i,
@@ -190,6 +187,7 @@ def test_step(data_dict, model, device, cfg, surf_factors):
                                 global_params_values,
                                 global_params_reference,
                             )
+                            prediction_surf[:, i, start_idx:end_idx] = tpredictions_batch
                     else:
                         for i in range(surface_mesh_centers.shape[1]):
                             tpredictions_batch = model.solution_calculator_surf(
@@ -583,31 +581,31 @@ def main(cfg: DictConfig):
 
         data_dict = {key: torch.unsqueeze(value, 0) for key, value in data_dict.items()}
 
-        prediction_surf = test_step(
-            data_dict, model, dist.device, cfg, surf_factors
-        )
+        prediction_surf = test_step(data_dict, model, dist.device, cfg, surf_factors)
 
         prediction_surf = prediction_surf[0].reshape(num_timesteps, num_points, prediction_surf.shape[-1])
         surface_fields = surface_fields.reshape(num_timesteps, num_points, surface_fields.shape[-1])
 
-        surface_coordinates_initial = surface_coordinates[0, :, :3]
-
-        for i in range(num_timesteps):
-            surface_fields[i, :, :] = surface_fields[i, :, :] + surface_coordinates_initial
+        surface_coordinates_initial = unnormalize(surface_coordinates[0, :, :3], s_max, s_min)
+        surface_coordinates_unnormalized = unnormalize(surface_coordinates[:, :, :3], s_max, s_min)
 
         if cfg.model.transient_scheme == "implicit":
             for i in range(num_timesteps):
                 if i == 0:
-                    d_prediction_surf = surface_coordinates_initial
+                    prediction_surf[i, :, :] += surface_coordinates_initial
+                    surface_fields[i, :, :] += surface_coordinates_initial
                 else:
                     d_prediction_surf = prediction_surf[i-1, :, :]
-                prediction_surf[i, :, :] = prediction_surf[i, :, :] + d_prediction_surf
+                    d_truth_surf = surface_fields[i-1, :, :]
+                    prediction_surf[i, :, :] = prediction_surf[i, :, :] + d_prediction_surf
+                    surface_fields[i, :, :] = (surface_coordinates_unnormalized[i, :, :] - surface_coordinates_unnormalized[i-1, :, :]) + d_truth_surf
         elif cfg.model.transient_scheme == "explicit":
             for i in range(num_timesteps):
                 prediction_surf[i, :, :] += surface_coordinates_initial
+                surface_fields[i, :, :] += surface_coordinates_initial
         else:
             raise ValueError(f"Invalid transient scheme: {cfg.model.transient_scheme}")
-
+        # import pdb; pdb.set_trace()
         vtp_pred_save_path = os.path.join(
             pred_save_path, dirname[:-4], "predicted"
         )
@@ -689,7 +687,6 @@ def main(cfg: DictConfig):
                 error_max = (np.max(np.abs(prediction_surf[ii] - surface_coordinates_initial), axis=(0)) - np.amax(abs(surface_fields[ii] - surface_coordinates_initial), axis=(0)))/np.amax(np.abs(surface_fields[ii] - surface_coordinates_initial), axis=(0))
                 pred_displacement_mag = np.sqrt(np.sum(np.square(prediction_surf[ii] - surface_coordinates_initial), axis=(1)))
                 true_displacement_mag = np.sqrt(np.sum(np.square(surface_fields[ii] - surface_coordinates_initial), axis=(1)))
-                # print(true_displacement_mag.shape, pred_displacement_mag.shape)
                 l2_gt_displacement_mag = np.mean(np.square(true_displacement_mag), (0))
                 l2_error_displacement_mag = np.mean(np.square(pred_displacement_mag - true_displacement_mag), (0))
                 error_max_displacement = (np.max(np.abs(pred_displacement_mag), axis=(0)) - np.amax(abs(true_displacement_mag), axis=(0)))/np.amax(np.abs(true_displacement_mag), axis=(0))

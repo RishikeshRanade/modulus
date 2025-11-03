@@ -299,12 +299,12 @@ class SolutionCalculatorSurface(nn.Module):
         encoding_g: torch.Tensor,
         encoding_node: torch.Tensor,
         surface_mesh_neighbors: torch.Tensor,
-        surface_normals: torch.Tensor,
-        surface_neighbors_normals: torch.Tensor,
-        surface_areas: torch.Tensor,
-        surface_neighbors_areas: torch.Tensor,
-        global_params_values: torch.Tensor,
-        global_params_reference: torch.Tensor,
+        surface_normals: torch.Tensor | None = None,
+        surface_neighbors_normals: torch.Tensor | None = None,
+        surface_areas: torch.Tensor | None = None,
+        surface_neighbors_areas: torch.Tensor | None = None,
+        global_params_values: torch.Tensor | None = None,
+        global_params_reference: torch.Tensor | None = None,
         surface_features: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Function to approximate solution given the neighborhood information"""
@@ -322,14 +322,14 @@ class SolutionCalculatorSurface(nn.Module):
             surface_mesh_neighbors,
         ]
 
-        if self.use_surface_normals:
+        if self.use_surface_normals and surface_normals is not None:
             centers_inputs.append(surface_normals)
-            if self.num_sample_points > 1:
+            if self.num_sample_points > 1 and surface_neighbors_normals is not None:
                 neighbors_inputs.append(surface_neighbors_normals)
 
-        if self.use_surface_area:
+        if self.use_surface_area and surface_areas is not None:
             centers_inputs.append(torch.log(surface_areas) / 10)
-            if self.num_sample_points > 1:
+            if self.num_sample_points > 1 and surface_neighbors_areas is not None:
                 neighbors_inputs.append(torch.log(surface_neighbors_areas) / 10)
 
         surface_mesh_centers = torch.cat(centers_inputs, dim=-1)

@@ -429,18 +429,35 @@ class DoMINO(nn.Module):
                 nn_basis=self.nn_basis_vol,
             )
 
-    def _validate_and_extract_features(self, data_dict):
+    def _validate_and_extract_surface_properties(self, data_dict):
         """
-        Validate and extract nodal features from data dictionary.
+        Validate and extract surface properties from data dictionary.
         
         Args:
             data_dict: Input data dictionary
             
         Returns:
-            Tuple of (surface_features, volume_features, geometry_features)
-            
-        Raises:
-            ValueError: If feature dimensions don't match expected values
+            Tuple of (surface_areas, surface_normals, surface_neighbors_areas, surface_neighbors_normals)
+        """
+        surface_areas = None
+        surface_normals = None
+        surface_neighbors_areas = None
+        surface_neighbors_normals = None
+        
+        if "surface_areas" in data_dict:
+            surface_areas = data_dict["surface_areas"]
+            surface_neighbors_areas = data_dict["surface_neighbors_areas"]
+            surface_areas = torch.unsqueeze(surface_areas, -1)
+            surface_neighbors_areas = torch.unsqueeze(surface_neighbors_areas, -1)
+        if "surface_normals" in data_dict:
+            surface_normals = data_dict["surface_normals"]
+            surface_neighbors_normals = data_dict["surface_neighbors_normals"]
+
+        return surface_areas, surface_normals, surface_neighbors_areas, surface_neighbors_normals
+    
+    def _validate_and_extract_nodal_features(self, data_dict):
+        """
+        Validate and extract nodal features from data dictionary.
         """
         surface_features = None
         volume_features = None
@@ -774,10 +791,10 @@ class DoMINO(nn.Module):
                 encoding_g_surf[:, i],
                 encoding_node_surf[:, i],
                 surface_mesh_neighbors_i,
-                surface_normals[:, i],
-                surface_neighbors_normals[:, i],
-                surface_areas[:, i],
-                surface_neighbors_areas[:, i],
+                surface_normals[:, i] if surface_normals is not None else None,
+                surface_neighbors_normals[:, i] if surface_neighbors_normals is not None else None,
+                surface_areas[:, i] if surface_areas is not None else None,
+                surface_neighbors_areas[:, i] if surface_neighbors_areas is not None else None,
                 global_params_values,
                 global_params_reference,
                 surface_features_i,
@@ -829,10 +846,10 @@ class DoMINO(nn.Module):
                 encoding_g_surf[:, i],
                 encoding_node_surf[:, i],
                 surface_mesh_neighbors[:, i],
-                surface_normals[:, i],
-                surface_neighbors_normals[:, i],
-                surface_areas[:, i],
-                surface_neighbors_areas[:, i],
+                surface_normals[:, i] if surface_normals is not None else None,
+                surface_neighbors_normals[:, i] if surface_neighbors_normals is not None else None,
+                surface_areas[:, i] if surface_areas is not None else None,
+                surface_neighbors_areas[:, i] if surface_neighbors_areas is not None else None,
                 global_params_values,
                 global_params_reference,
                 surface_features_i,
@@ -861,11 +878,11 @@ class DoMINO(nn.Module):
                 - surface_neighbors_areas: Surface neighbor areas
                 - volume_mesh_centers: Volume mesh center coordinates
                 - surface_mesh_centers: Surface mesh center coordinates
-                - surface_normals: Surface normal vectors
-                - surface_areas: Surface element areas
+                - (optional) surface_normals: Surface normal vectors
+                - (optional) surface_areas: Surface element areas
                 - surface_mesh_neighbors: Surface mesh neighbor coordinates
-                - surface_neighbors_normals: Surface neighbor normal vectors
-                - surface_neighbors_areas: Surface neighbor areas
+                - (optional) surface_neighbors_normals: Surface neighbor normal vectors
+                - (optional) surface_neighbors_areas: Surface neighbor areas
                 - global_params_values: Global parameter values
                 - global_params_reference: Global parameter references
                 - (optional) surface_features, volume_features, geometry_features
@@ -882,7 +899,11 @@ class DoMINO(nn.Module):
         
         # Validate and extract features
         surface_features, volume_features, geometry_features = (
-            self._validate_and_extract_features(data_dict)
+            self._validate_and_extract_nodal_features(data_dict)
+        )
+
+        surface_areas, surface_normals, surface_neighbors_areas, surface_neighbors_normals = (
+            self._validate_and_extract_surface_properties(data_dict)
         )
 
         # Compute volume outputs if required
@@ -937,11 +958,7 @@ class DoMINO(nn.Module):
             
             # Get surface mesh data
             surface_mesh_centers = data_dict["surface_mesh_centers"]
-            surface_normals = data_dict["surface_normals"]
-            surface_areas = torch.unsqueeze(data_dict["surface_areas"], -1)
             surface_mesh_neighbors = data_dict["surface_mesh_neighbors"]
-            surface_neighbors_normals = data_dict["surface_neighbors_normals"]
-            surface_neighbors_areas = torch.unsqueeze(data_dict["surface_neighbors_areas"], -1)
             
             # Compute local geometry encodings
             encoding_g_surf = self._compute_surface_local_encodings(
