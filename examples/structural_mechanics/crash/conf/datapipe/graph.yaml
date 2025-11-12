@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2023 - 2024 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: Copyright (c) 2023 - 2025 NVIDIA CORPORATION & AFFILIATES.
 # SPDX-FileCopyrightText: All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -15,9 +15,10 @@
 # limitations under the License.
 
 _target_: datapipe.CrashGraphDataset
+_convert_: all
 data_dir: ${training.raw_data_dir}
 name: crash_train
 split: train
 num_samples: ${training.num_training_samples}
 num_steps: ${training.num_time_steps}
-wall_node_disp_threshold: 1.0
+features: [thickness]
