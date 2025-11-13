@@ -107,7 +107,7 @@ def get_keys_to_read(
     """
 
     # Always read these keys:
-    keys_to_read = ["stl_coordinates", "stl_centers", "stl_faces", "stl_areas", "timesteps"]
+    keys_to_read = ["stl_coordinates", "timesteps"]
 
     # If these keys are in the config, use them, else provide defaults in
     # case they aren't in the dataset:

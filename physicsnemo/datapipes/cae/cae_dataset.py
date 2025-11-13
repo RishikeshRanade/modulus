@@ -1205,8 +1205,10 @@ def compute_mean_std_min_max(
             # Compute batch statistics
             batch_mean = field_data.mean(axis=axis)
             batch_M2 = ((field_data - batch_mean) ** 2).sum(axis=axis)
-            batch_n = field_data.shape[0] * field_data.shape[1]
 
+            if transient:
+                batch_n = field_data.shape[0] * field_data.shape[1]
+            
             # Update running mean and M2 (Welford's algorithm)
             delta = batch_mean - mean[field_key]
             N[field_key] += batch_n  # batch_n should also be torch.int64
@@ -1241,6 +1243,10 @@ def compute_mean_std_min_max(
         for field_key in field_keys:
             field_data = data[field_key]
 
+            if transient:
+                if len(field_data.shape) == 3:
+                    field_data = field_data.reshape(field_data.shape[0] * field_data.shape[1], field_data.shape[-1])
+                
             batch_n = field_data.shape[0]
 
             # # Update min/max

@@ -173,17 +173,17 @@ class CrashDataset(Dataset):
 
         # Add the parameters to the dictionary
         return {
-            "stl_coordinates": np.float32(stl_vertices),
-            "stl_centers": np.float32(stl_centers),
-            "stl_faces": np.float32(mesh_indices_flattened),
-            "stl_areas": np.float32(stl_sizes),
-            "surface_mesh_centers": np.float32(surface_coordinates),
+            "stl_coordinates": np.float32(surface_coordinates), # np.float32(surface_coordinates)
+            # "stl_centers": np.float32(stl_centers), # surface centers
+            # "stl_faces": np.float32(mesh_indices_flattened), #
+            # "stl_areas": np.float32(stl_sizes),
+            "surface_mesh_centers": np.float32(surface_coordinates), # (N, 3) coordinates, x, y, z
             # "surface_normals": np.float32(surface_normals),
             # "surface_areas": np.float32(surface_sizes),
-            "surface_fields": np.float32(surface_fields),
-            "surface_features": np.float32(surface_coordinates), # This can be thickness and material properties on nodes
-            "geometry_features": np.float32(stl_vertices), # This can be thickness and material properties on nodes
-            "timesteps": np.float32(timesteps),
+            "surface_fields": np.float32(surface_fields), # (N, 3) acceleration
+            "surface_features": np.float32(surface_coordinates), # (N, 1) thickness, This can be thickness and material properties on nodes
+            "geometry_features": np.float32(stl_vertices), # This can be thickness and material properties on nodes # rename tostl_features
+            "timesteps": np.float32(timesteps), # t = [0, 1, 2, 3, 4, 5, 6]
             "filename": cfd_filename,
             "global_params_values": global_params_values,
             "global_params_reference": global_params_reference,
