@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2023 - 2024 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: Copyright (c) 2023 - 2025 NVIDIA CORPORATION & AFFILIATES.
 # SPDX-FileCopyrightText: All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -25,6 +25,7 @@ experiment_desc: "unified training recipe for crash models"
 run_desc: "unified training recipe for crash models"
 
 defaults:
+  - reader: vtp #d3plot
   - datapipe: point_cloud   # will be overridden by model configs
   - model: transolver_autoregressive_rollout_training
   - training: default
