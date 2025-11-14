@@ -906,7 +906,6 @@ class DoMINO(nn.Module):
             Tuple of (output_vol, output_surf) where each can be None if not computed
         """
 
-        print(data_dict.keys())
         # Extract base inputs
         geo_centers = data_dict["geometry_coordinates"]
         if "global_params_values" in data_dict:
