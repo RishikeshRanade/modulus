@@ -49,6 +49,13 @@ def main(cfg: DictConfig) -> None:
     Args:
         cfg: Hydra configuration object containing all parameters
     """
+    # ################################
+    # # Force single-process mode for statistics computation
+    # # This script doesn't benefit from distributed execution
+    # ################################
+    # for var in ['RANK', 'WORLD_RANK', 'WORLD_SIZE', 'LOCAL_RANK']:
+    #     os.environ.pop(var, None)
+    
     ################################
     # Initialize distributed manager
     ################################
@@ -94,7 +101,6 @@ def main(cfg: DictConfig) -> None:
 
         target_keys = [
             "surface_fields",
-            "stl_centers",
             "surface_mesh_centers",
         ]
 

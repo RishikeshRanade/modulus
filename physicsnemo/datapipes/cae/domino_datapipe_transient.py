@@ -781,23 +781,26 @@ class DoMINODataPipe(Dataset):
         # because we need to use the (maybe) normalized volume coordinates and grid
         ########################################################################
 
-        # SDF calculation on the volume grid using WARP
-        sdf_grid, _ = signed_distance_field(
-            normed_vertices,
-            stl_indices,
-            grid,
-            use_sign_winding_number=True,
-        )
-
-        # Get the SDF of all the selected volume coordinates,
-        # And keep the closest point to each one.
-        sdf_nodes, sdf_node_closest_point = signed_distance_field(
-            normed_vertices,
-            stl_indices,
-            volume_coordinates[0],
-            use_sign_winding_number=True,
-        )
-        sdf_nodes = sdf_nodes.reshape((-1, 1))
+        if mesh_indices is not None:
+            sdf_grid, _ = signed_distance_field(
+                normed_vertices,
+                mesh_indices,
+                grid,
+                use_sign_winding_number=True,
+            )
+            # Get the SDF of all the selected volume coordinates,
+            # And keep the closest point to each one.
+            sdf_nodes, sdf_node_closest_point = signed_distance_field(
+                normed_vertices,
+                stl_indices,
+                volume_coordinates[0],
+                use_sign_winding_number=True,
+            )
+            sdf_nodes = sdf_nodes.reshape((-1, 1))
+        else:
+            sdf_grid = None
+            sdf_nodes = None
+            sdf_node_closest_point = None
 
         # Use the closest point from the mesh to compute the volume encodings:
         pos_normals_closest_vol, pos_normals_com_vol = self.calculate_volume_encoding(
@@ -806,12 +809,16 @@ class DoMINODataPipe(Dataset):
 
         return_dict = {
             "volume_mesh_centers": volume_coordinates,
-            "sdf_nodes": sdf_nodes,
             "grid": grid,
-            "sdf_grid": sdf_grid,
-            "pos_volume_closest": pos_normals_closest_vol,
             "pos_volume_center_of_mass": pos_normals_com_vol,
         }
+
+        if sdf_nodes is not None:
+            return_dict["sdf_nodes"] = sdf_nodes
+        if sdf_grid is not None:
+            return_dict["sdf_grid"] = sdf_grid
+        if pos_normals_closest_vol is not None:
+            return_dict["pos_volume_closest"] = pos_normals_closest_vol
         if volume_features is not None:
             return_dict["volume_features"] = volume_features
         if volume_fields is not None:
@@ -825,25 +832,38 @@ class DoMINODataPipe(Dataset):
         sdf_node_closest_point: torch.Tensor,
         center_of_mass: torch.Tensor,
     ):
-        pos_normals_closest_vol = volume_coordinates - sdf_node_closest_point
-        pos_normals_com_vol = volume_coordinates - center_of_mass
+        if sdf_node_closest_point is not None:
+            pos_normals_closest_vol = volume_coordinates - sdf_node_closest_point
+        else:
+            pos_normals_closest_vol = None
+        if center_of_mass is not None:
+            pos_normals_com_vol = volume_coordinates - center_of_mass
+        else:
+            pos_normals_com_vol = None
 
         return pos_normals_closest_vol, pos_normals_com_vol
 
     @torch.no_grad()
     def process_data(self, data_dict):
+        return_dict = {}
         # Validate that all required keys are present in data_dict
         required_keys = [
-            "global_params_values",
-            "global_params_reference",
             "stl_coordinates",
-            "stl_faces",
-            "stl_centers",
-            "stl_areas",
         ]
+
+        if "global_params_values" in data_dict:
+            required_keys.append("global_params_values")
+        if "global_params_reference" in data_dict:
+            required_keys.append("global_params_reference")
+
+        if self.config.use_surface_normals:
+            required_keys.append("stl_faces")
+            required_keys.append("stl_normals")
+            required_keys.append("stl_centers")
+        if self.config.use_surface_area:
+            required_keys.append("stl_areas")
         if self.config.transient:
             required_keys.append("timesteps")
-
 
         missing_keys = [key for key in required_keys if key not in data_dict]
         if missing_keys:
@@ -853,10 +873,9 @@ class DoMINODataPipe(Dataset):
             )
 
         # Start building the preprocessed return dict:
-        return_dict = {
-            "global_params_values": data_dict["global_params_values"],
-            "global_params_reference": data_dict["global_params_reference"],
-        }
+        if "global_params_values" in data_dict and "global_params_reference" in data_dict:
+            return_dict["global_params_values"] = data_dict["global_params_values"]
+            return_dict["global_params_reference"] = data_dict["global_params_reference"]
 
         ########################################################################
         # Process the core STL information
@@ -915,17 +934,21 @@ class DoMINODataPipe(Dataset):
             normed_vertices = data_dict["stl_coordinates"]
 
         # For SDF calculations, make sure the mesh_indices_flattened is an integer array:
-        mesh_indices_flattened = data_dict["stl_faces"].to(torch.int32) # Make this optional
+        if "stl_faces" in data_dict:
+            mesh_indices_flattened = data_dict["stl_faces"].to(torch.int32) # Make this optional
+            # Compute signed distance function for the surface grid:
+            # Make this optional
+            sdf_surf_grid, _ = signed_distance_field(
+                mesh_vertices=normed_vertices,
+                mesh_indices=mesh_indices_flattened,
+                input_points=surf_grid,
+                use_sign_winding_number=True,
+            )
+            return_dict["sdf_surf_grid"] = sdf_surf_grid # Make this optional
+        else:
+            sdf_surf_grid = None
+            mesh_indices_flattened = None
 
-        # Compute signed distance function for the surface grid:
-        # Make this optional
-        sdf_surf_grid, _ = signed_distance_field(
-            mesh_vertices=normed_vertices,
-            mesh_indices=mesh_indices_flattened,
-            input_points=surf_grid,
-            use_sign_winding_number=True,
-        )
-        return_dict["sdf_surf_grid"] = sdf_surf_grid # Make this optional
         return_dict["surf_grid"] = surf_grid # Make this optional
 
         # Store this only if normalization is active:
@@ -934,18 +957,20 @@ class DoMINODataPipe(Dataset):
 
         # This is a center of mass computation for the stl surface,
         # using the size of each mesh point as weight.
-        center_of_mass = calculate_center_of_mass(
-            data_dict["stl_centers"], data_dict["stl_areas"]
-        )
+        if "stl_centers" in data_dict and "stl_areas" in data_dict:
+            center_of_mass = calculate_center_of_mass(
+                data_dict["stl_centers"], data_dict["stl_areas"]
+            )
+        else:
+            center_of_mass = torch.mean(data_dict["stl_coordinates"], dim=0)
 
         # This will apply downsampling if needed to the geometry coordinates
         geom_centers, idx_geometry = self.downsample_geometry(
             stl_vertices=data_dict["stl_coordinates"],
         )
         return_dict["geometry_coordinates"] = geom_centers
-        if "geometry_features" in data_dict:
-            return_dict["geometry_features"] = data_dict["geometry_features"][idx_geometry]
-
+        if "stl_features" in data_dict:
+            return_dict["geometry_features"] = data_dict["stl_features"][idx_geometry]
 
         ########################################################################
         # Determine the volumetric bounds of the data:
@@ -961,9 +986,9 @@ class DoMINODataPipe(Dataset):
             t_max = torch.amax(timesteps)
             t_min = torch.amin(timesteps)
             timesteps = normalize(timesteps, t_max, t_min)
-            return_dict["timesteps"] = timesteps
-            return_dict["t_max"] = t_max
-            return_dict["t_min"] = t_min
+            # return_dict["timesteps"] = timesteps
+            # return_dict["t_max"] = t_max
+            # return_dict["t_min"] = t_min
         else:
             timesteps = None
 

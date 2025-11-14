@@ -111,16 +111,17 @@ def get_keys_to_read(
 
     # If these keys are in the config, use them, else provide defaults in
     # case they aren't in the dataset:
-    cfg_params_vec = []
-    for key in cfg.variables.global_parameters:
-        if cfg.variables.global_parameters[key].type == "vector":
-            cfg_params_vec.extend(cfg.variables.global_parameters[key].reference)
-        else:
-            cfg_params_vec.append(cfg.variables.global_parameters[key].reference)
-    keys_to_read_if_available = {
-        "global_params_values": torch.tensor(cfg_params_vec).reshape(-1, 1),
-        "global_params_reference": torch.tensor(cfg_params_vec).reshape(-1, 1),
-    }
+    # cfg_params_vec = []
+    # for key in cfg.variables.global_parameters:
+    #     if cfg.variables.global_parameters[key].type == "vector":
+    #         cfg_params_vec.extend(cfg.variables.global_parameters[key].reference)
+    #     else:
+    #         cfg_params_vec.append(cfg.variables.global_parameters[key].reference)
+    # keys_to_read_if_available = {
+    #     "global_params_values": torch.tensor(cfg_params_vec).reshape(-1, 1),
+    #     "global_params_reference": torch.tensor(cfg_params_vec).reshape(-1, 1),
+    # }
+    keys_to_read_if_available = {}
 
     # Volume keys:
     volume_keys = [

@@ -537,8 +537,15 @@ class DoMINO(nn.Module):
         """
         # Computational domain grid
         p_grid = data_dict["grid"]
-        sdf_grid = data_dict["sdf_grid"]
-        
+        if "sdf_grid" in data_dict:
+            sdf_grid = data_dict["sdf_grid"]
+            if sdf_grid.shape[0] != p_grid.shape[0]:
+                raise ValueError(
+                    "SDF grid and grid must have the same number of points"
+                )
+        else:
+            sdf_grid = None
+
         # Normalize geometry centers based on volume domain
         if "volume_min_max" in data_dict:
             vol_max = data_dict["volume_min_max"][:, 1]
@@ -585,8 +592,14 @@ class DoMINO(nn.Module):
         """
         # Surface grid
         s_grid = data_dict["surf_grid"]
-        sdf_surf_grid = data_dict["sdf_surf_grid"]
-        
+        if "sdf_surf_grid" in data_dict:
+            sdf_surf_grid = data_dict["sdf_surf_grid"]
+            if sdf_surf_grid.shape[0] != s_grid.shape[0]:
+                raise ValueError(
+                    "SDF surface grid and surface grid must have the same number of points"
+                )
+        else:
+            sdf_surf_grid = None
         # Normalize geometry centers based on surface domain
         if "surface_min_max" in data_dict:
             surf_max = data_dict["surface_min_max"][:, 1]
@@ -892,10 +905,18 @@ class DoMINO(nn.Module):
         Returns:
             Tuple of (output_vol, output_surf) where each can be None if not computed
         """
+
+        print(data_dict.keys())
         # Extract base inputs
         geo_centers = data_dict["geometry_coordinates"]
-        global_params_values = data_dict["global_params_values"]
-        global_params_reference = data_dict["global_params_reference"]
+        if "global_params_values" in data_dict:
+            global_params_values = data_dict["global_params_values"]
+        else:
+            global_params_values = None
+        if "global_params_reference" in data_dict:
+            global_params_reference = data_dict["global_params_reference"]
+        else:
+            global_params_reference = None
         
         # Validate and extract features
         surface_features, volume_features, geometry_features = (
