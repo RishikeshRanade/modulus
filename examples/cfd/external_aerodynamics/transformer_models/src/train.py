@@ -53,6 +53,7 @@ from physicsnemo.datapipes.cae.transolver_datapipe import (
     create_transolver_dataset,
     TransolverDataPipe,
 )
+from physicsnemo.experimental.models.pulsar import PulsarModel
 
 # Local folder imports for this example
 from metrics import metrics_fn
@@ -260,6 +261,7 @@ def forward_pass(
     dist_manager: DistributedManager,
     data_mode: Literal["surface", "volume"],
     datapipe: TransolverDataPipe,
+    model_target: str,
 ):
     """
     Run the forward pass of the model for one batch, including metrics and loss calculation.
@@ -271,12 +273,13 @@ def forward_pass(
 
     """
 
-    features = batch["fx"]
+    features = batch.get("fx")
     embeddings = batch["embeddings"]
     targets = batch["fields"]
 
     # Cast precisions:
-    features = cast_precisions(features, precision=precision)
+    if features is not None:
+        features = cast_precisions(features, precision=precision)
     embeddings = cast_precisions(embeddings, precision=precision)
     if "geometry" in batch.keys():
         geometry = cast_precisions(batch["geometry"], precision=precision)
@@ -299,10 +302,87 @@ def forward_pass(
 
     with get_autocast_context(precision):
         # For fp8, we may have to pad the inputs:
-        if precision == "float8" and TE_AVAILABLE:
+        if precision == "float8" and TE_AVAILABLE and "geometry" not in batch.keys():
             features, geometry = pad_input_for_fp8(features, embeddings, geometry)
 
-        if "geometry" in batch.keys():
+        if "PulsarModel" in model_target:
+            geometry_points = batch.get("geometry")
+            if datapipe.config.model_type == "combined":
+                surface_embeddings = embeddings[0]
+                volume_embeddings = embeddings[1]
+                surface_points = surface_embeddings[:, :, :3]
+                volume_points = volume_embeddings[:, :, :3]
+                targets = [targets[0], targets[1]]
+            elif datapipe.config.model_type == "surface":
+                surface_points = embeddings[:, :, :3]
+                volume_points = None
+            else:
+                surface_points = None
+                volume_points = embeddings[:, :, :3]
+
+            if geometry_points is None:
+                geometry_points = (
+                    surface_points if surface_points is not None else volume_points
+                )
+
+            global_params_values = features
+            print(f"global_params_values: {global_params_values}")
+            if global_params_values is None:
+                global_params_values = torch.zeros(
+                    geometry_points.shape[0],
+                    1,
+                    2,
+                    device=geometry_points.device,
+                    dtype=geometry_points.dtype,
+                )
+                if not hasattr(forward_pass, "_warned_pulsar_no_fx"):
+                    import warnings
+                    warnings.warn(
+                        "Pulsar: batch has no 'fx' (global conditioning). Using zeros; "
+                        "loss may not decrease well if targets depend on AoA/Mach etc. "
+                        "Ensure data provides air_density/stream_velocity and datapipe returns 'fx'.",
+                        UserWarning,
+                        stacklevel=2,
+                    )
+                    forward_pass._warned_pulsar_no_fx = True
+            if global_params_values.ndim == 2:
+                global_params_values = global_params_values.unsqueeze(1)
+
+            outputs = model(
+                geometry_points=geometry_points,
+                surface_points=surface_points,
+                volume_points=volume_points,
+                global_params_values=global_params_values,
+            )
+            if output_pad_size is not None:
+                if isinstance(outputs, (list, tuple)):
+                    outputs = [
+                        unpad_output_for_fp8(out, output_pad_size) for out in outputs
+                    ]
+                else:
+                    outputs = unpad_output_for_fp8(outputs, output_pad_size)
+
+            if datapipe.config.model_type == "combined":
+                pred_vol, pred_surf = outputs
+                loss_vol = loss_fn(pred_vol, targets[1])
+                loss_surf = loss_fn(pred_surf, targets[0])
+                all_metrics["loss/surface"] = loss_surf.item()
+                all_metrics["loss/volume"] = loss_vol.item()
+                full_loss = 0.5 * (loss_surf + loss_vol)
+                outputs = [pred_surf, pred_vol]
+                targets = [targets[0], targets[1]]
+            elif datapipe.config.model_type == "surface":
+                pred_vol, pred_surf = outputs
+                full_loss = loss_fn(pred_surf, targets)
+                all_metrics["loss/surface"] = full_loss.item()
+                outputs = pred_surf
+            else:
+                pred_vol, pred_surf = outputs
+                full_loss = loss_fn(pred_vol, targets)
+                all_metrics["loss/volume"] = full_loss.item()
+                outputs = pred_vol
+
+        elif "geometry" in batch.keys():
             local_positions = embeddings[:, :, :3]
             # This is the Typhon path
             outputs = model(
@@ -411,6 +491,7 @@ def train_epoch(
             dist_manager,
             cfg.data.mode,
             dataloader,
+            cfg.model._target_,
         )
 
         optimizer.zero_grad()
@@ -525,6 +606,7 @@ def val_epoch(
                 dist_manager,
                 cfg.data.mode,
                 dataloader,
+                cfg.model._target_,
             )
 
             if i == 0:
@@ -661,11 +743,13 @@ def main(cfg: DictConfig):
 
     model.to(dist_manager.device)
 
-    model = torch.nn.parallel.DistributedDataParallel(
-        model,
+    ddp_kw = dict(
         device_ids=[dist_manager.local_rank],
         output_device=dist_manager.device,
     )
+    if "PulsarModel" in cfg.model.get("_target_", ""):
+        ddp_kw["find_unused_parameters"] = True
+    model = torch.nn.parallel.DistributedDataParallel(model, **ddp_kw)
 
     num_params = sum(p.numel() for p in model.parameters())
     logger.info(f"Number of parameters: {num_params}")

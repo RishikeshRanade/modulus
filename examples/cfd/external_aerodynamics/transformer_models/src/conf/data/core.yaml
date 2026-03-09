@@ -16,9 +16,9 @@
 
 # Paths to your data:
 train:
-  data_path:  /lustre/fsw/portfolios/coreai/projects/coreai_modulus_cae/datasets/drivaer_aws/domino/train/
+  data_path: /lustre/fsw/coreai_modulus_cae/coreya/datasets/domino/train/
 val:
-  data_path: /lustre/fsw/portfolios/coreai/projects/coreai_modulus_cae/datasets/drivaer_aws/domino/val/
+  data_path: /lustre/fsw/coreai_modulus_cae/coreya/datasets/domino/val/
 
 # You can set a normalization factor directory:
 normalization_dir: "src/"

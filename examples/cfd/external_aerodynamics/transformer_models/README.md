@@ -1,7 +1,7 @@
 <!-- markdownlint-disable -->
 # Transformer Models for External Aerodynamics on Irregular Meshes
 
-This directory contains training and inference recipes for transformer-based surrogate models for CFD applications. This is a collection of transformer models including `Transolver` and `GeoTransolver`, both of which can be run on surface or volume data.
+This directory contains training and inference recipes for transformer-based surrogate models for CFD applications. This is a collection of transformer models including `Transolver`, `GeoTransolver`, and `Pulsar`, all of which can be run on surface or volume data (and `Pulsar` additionally supports combined surface+volume training).
 
 ## Models Overview
 
@@ -17,6 +17,10 @@ GeoTransolver adapts the Transolver backbone by replacing standard attention wit
 
 GALE directly targets core challenges in AI physics modeling. By structuring self-attention around physics-aware slices, GeoTransolver encourages interactions that reflect operator couplings (e.g., pressure–velocity or field–material). Multi-scale ball queries enforce locality where needed while maintaining access to global signals, balancing efficiency with nonlocal reasoning. Continuous geometry-context projection at depth mitigates representation drift and improves stability, while providing a natural interface for constraint-aware training and regularization. Together, these design choices enhance accuracy, robustness to geometric and regime shifts, and scalability on large, irregular discretizations.
 
+### Pulsar
+
+Pulsar (PDE Unstructured Latent Simulator with Anchored Attention based Representations) is a geometry- and BC-conditioned architecture for incompressible flow prediction on unstructured surface and volume point clouds. It builds global context tokens from geometry and boundary conditions, injects multi-scale local features via ball-query stacks, and optionally uses hierarchical anchor-slice attention for localized reasoning with global coupling.
+
 ## External Aerodynamics CFD Example: Overview
 
 This directory contains the essential components for training and evaluating models tailored to external aerodynamics CFD problems. The training examples use the [DrivaerML dataset](https://caemldatasets.org/drivaerml/).
@@ -31,7 +35,7 @@ These transformer models can use TransformerEngine from NVIDIA, as well as tenso
 
 1. Prepare the Dataset. These models use the same Zarr outputs as other models with DrivaerML. `PhysicsNeMo` has a related project to help with data processing, called [PhysicsNeMo-Curator](https://github.com/NVIDIA/physicsnemo-curator). Using `PhysicsNeMo-Curator`, the data needed to train can be setup easily. Please refer to [these instructions on getting started](https://github.com/NVIDIA/physicsnemo-curator?tab=readme-ov-file#what-is-physicsnemo-curator) with `PhysicsNeMo-Curator`. For specifics of preparing the dataset for this example, see the [download](https://github.com/NVIDIA/physicsnemo-curator/blob/main/examples/external_aerodynamics/README.md#download-drivaerml-dataset) and [preprocessing](https://github.com/NVIDIA/physicsnemo-curator/blob/main/examples/external_aerodynamics/README.md) instructions from `physicsnemo-curator`. Users should apply the preprocessing steps locally to produce `zarr` output files.
 
-2. Train your model. The model and training configuration is configured with `hydra`, and configurations are available for both surface and volume modes (e.g., `transolver_surface`, `transolver_volume`, `geotransolver_surface`, `geotransolver_volume`). Find configurations in `src/conf`, where you can control both network properties and training properties. See below for an overview and explanation of key parameters that may be of special interest.
+2. Train your model. The model and training configuration is configured with `hydra`, and configurations are available for surface, volume, and combined modes (e.g., `transolver_surface`, `transolver_volume`, `geotransolver_surface`, `geotransolver_volume`, `pulsar_surface`, `pulsar_volume`, `pulsar_combined`). Find configurations in `src/conf`, where you can control both network properties and training properties. See below for an overview and explanation of key parameters that may be of special interest.
 
 3. Use the trained model to perform inference. This example contains inference examples for the validation set, already in Zarr format. The `.vtp` inference pipeline is being updated to accommodate these models.
 

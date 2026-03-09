@@ -129,11 +129,23 @@ def batched_inference_loop(
     output_pad_size: int | None,
     dist_manager: DistributedManager,
     datapipe: TransolverDataPipe,
+    model_target: str,
 ) -> tuple[float, dict, tuple[torch.Tensor, torch.Tensor]]:
-    N = batch["embeddings"].shape[1]
+    if isinstance(batch["embeddings"], list):
+        N = batch["embeddings"][0].shape[1]
+    else:
+        N = batch["embeddings"].shape[1]
     # This generates a random ordering of the input points,
     # Which we'll then slice up into inputs to the model.
-    indices = torch.randperm(N, device=batch["fx"].device)
+    if "fx" in batch:
+        device = batch["fx"].device
+    else:
+        device = (
+            batch["embeddings"][0].device
+            if isinstance(batch["embeddings"], list)
+            else batch["embeddings"].device
+        )
+    indices = torch.randperm(N, device=device)
 
     index_blocks = torch.split(indices, batch_resolution)
 
@@ -142,20 +154,28 @@ def batched_inference_loop(
     start = time.time()
     for i, index_block in enumerate(index_blocks):
         # We compute the local_batch by slicing from embeddings and fields:
-        local_embeddings = batch["embeddings"][:, index_block]
-        local_fields = batch["fields"][:, index_block]
+        if isinstance(batch["embeddings"], list):
+            local_embeddings = [emb[:, index_block] for emb in batch["embeddings"]]
+            local_fields = [fld[:, index_block] for fld in batch["fields"]]
+        else:
+            local_embeddings = batch["embeddings"][:, index_block]
+            local_fields = batch["fields"][:, index_block]
 
         # fx does not need to be sliced for TransolverX:
-        if "geometry" not in batch.keys():
-            local_fx = batch["fx"][:, index_block]
+        if "fx" in batch:
+            if "geometry" not in batch.keys():
+                local_fx = batch["fx"][:, index_block]
+            else:
+                local_fx = batch["fx"]
         else:
-            local_fx = batch["fx"]
+            local_fx = None
 
         local_batch = {
-            "fx": local_fx,
             "embeddings": local_embeddings,
             "fields": local_fields,
         }
+        if local_fx is not None:
+            local_batch["fx"] = local_fx
 
         if "air_density" in batch.keys() and "stream_velocity" in batch.keys():
             local_batch["air_density"] = batch["air_density"]
@@ -173,6 +193,7 @@ def batched_inference_loop(
             dist_manager,
             data_mode,
             datapipe,
+            model_target,
         )
 
         # Accumulate the loss and metrics:
@@ -316,6 +337,7 @@ def inference(cfg: DictConfig) -> None:
                     output_pad_size,
                     dist_manager,
                     val_dataset,
+                    cfg.model._target_,
                 )
             )
         end = time.time()

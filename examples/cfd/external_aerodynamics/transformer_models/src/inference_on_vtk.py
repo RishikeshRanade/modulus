@@ -647,6 +647,7 @@ def inference_on_vtk(cfg: DictConfig) -> None:
                     output_pad_size=output_pad_size,
                     dist_manager=dist_manager,
                     datapipe=datapipe,
+                    model_target=cfg.model._target_,
                 )
 
             # Remove batch dimension and get predictions
