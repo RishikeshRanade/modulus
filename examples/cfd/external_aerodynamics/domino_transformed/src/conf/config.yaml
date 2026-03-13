@@ -21,7 +21,7 @@
 # │            Project Details                │
 # └───────────────────────────────────────────┘  
 project:
-  name: DrivAerML_Dataset_Transformed
+  name: DrivAerML_Dataset_Transformed_V0
 
 exp_tag: 1
 project_dir: outputs/${project.name}/
@@ -70,15 +70,18 @@ variables:
 # │         Data Configs                      │
 # └───────────────────────────────────────────┘  
 data:
-  input_dir: /lustre/fsw/portfolios/coreai/projects/coreai_modulus_cae/datasets/drivaer_aws/domino/train/
-  input_dir_val: /lustre/fsw/portfolios/coreai/projects/coreai_modulus_cae/datasets/drivaer_aws/domino/val/
+  input_dir: /lustre/fsw/coreai_modulus_cae/coreya/datasets/domino/train/
+  input_dir_val: /lustre/fsw/coreai_modulus_cae/coreya/datasets/domino/val/
   gpu_preprocessing: true
   gpu_output: true
   normalize_coordinates: true
   sampling: true
   scaling_factors: ${project_dir}/scaling_factors/scaling_factors.pkl
   volume_sample_from_disk: true
-  max_samples_for_statistics: 200
+  max_samples_for_statistics: 50
+  # Scale invariance: divide position-like coords by reference_scale (e.g. [12.0, 4.5, 3.25])
+  scale_invariance: true
+  reference_scale: [12.0, 4.5, 3.25]
 
 # ┌───────────────────────────────────────────┐
 # │          Domain Parallelism Settings      │
@@ -97,66 +100,58 @@ model:
   loss_function: 
     loss_type: "mse"
     area_weighing_factor: 10000
-  use_sdf_in_basis_func: true
+  use_sdf: true
   volume_points_sample: 8192
   surface_points_sample: 8192
   surface_sampling_algorithm: area_weighted
   geom_points_sample: 300_000
   num_neighbors_surface: 7
-  num_neighbors_volume: 10
+  num_neighbors_volume: 7
   return_volume_neighbors: false
   use_surface_normals: true
-  use_surface_area: true
-  integral_loss_scaling_factor: 100
+  use_surface_area: false
+  integral_loss_scaling_factor: 0
   normalization: min_max_scaling
-  encode_parameters: false
-  surf_loss_scaling: 5.0
+  encode_parameters: false  # If true, parameter_model is used to encode global params (Re, AoA, etc.)
+  surf_loss_scaling: 1.0
   vol_loss_scaling: 1.0
-  geometry_encoding_type: both
   solution_calculation_mode: two-loop
-  position_encoder_base_neurons: 0
   # Geometry representation: token-direct path (cross ball query + Transolver)
   geometry_rep:
     use_token_direct: true
     token_hidden_dim: 256
-    transolver_depth: 2
-    transolver_slice_num: 32
-    transolver_num_heads: 4
+    transolver_depth: 10
+    transolver_slice_num: 128
+    transolver_num_heads: 8
     transolver_dropout: 0.0
     transolver_use_te: false
     geo_conv:
       volume_radii: [0.1, 0.5, 1.0, 2.5]
-      surface_radii: [0.01, 0.05, 1.0]
-      volume_neighbors_in_radius: [32, 64, 128, 256]
-      surface_neighbors_in_radius: [8, 16, 128]
+      surface_radii: [0.05, 0.25, 1.0, 2.5]
+      volume_neighbors_in_radius: [8, 16, 64, 128]
+      surface_neighbors_in_radius: [8, 16, 64, 128]
       activation: ${model.activation}
     geo_processor:
       activation: ${model.activation}
-      self_attention: false
-      cross_attention: false
-  geometry_local:
-    volume_neighbors_in_radius: [64, 128]
-    surface_neighbors_in_radius: [32, 128]
-    volume_radii: [0.1, 0.25]
-    surface_radii: [0.05, 0.25]
-    base_layer: 512
-  # Hierarchical fusion: basis + geometry -> Stage1; FiLM from global -> Stage2
+  # Hierarchical fusion: basis + geometry -> Stage1; FiLM from global -> Stage2 (fusion-only)
   fusion:
     use_hierarchical_fusion: true
     fusion_dim: 512
     geometry_dim_volume: 192
     geometry_dim_surface: 160
     global_embed_dim: 64
-    stage1_hidden: null
-    film_hidden: null
+    stage1_hidden: 256 # Set if geometry matters more
+    film_hidden: null # Set if global parameters matter more
   nn_basis_functions:
     base_layer: 512
     fourier_features: true
     num_modes: 5
     activation: ${model.activation}
   aggregation_model:
-    base_layer: 512
+    base_layer: 256
+    num_hidden_layers: 2
     activation: ${model.activation}
+  # Only used when encode_parameters is true
   parameter_model:
     base_layer: 512
     fourier_features: false

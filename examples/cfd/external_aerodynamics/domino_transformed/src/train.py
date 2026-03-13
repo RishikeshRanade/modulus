@@ -435,7 +435,6 @@ def main(cfg: DictConfig) -> None:
         device_mesh=domain_mesh,
         placements=placements,
         normalize_coordinates=cfg.data.normalize_coordinates,
-        sample_in_bbox=cfg.data.sample_in_bbox,
         sampling=cfg.data.sampling,
     )
     train_sampler = DistributedSampler(
@@ -455,7 +454,6 @@ def main(cfg: DictConfig) -> None:
         device_mesh=domain_mesh,
         placements=placements,
         normalize_coordinates=cfg.data.normalize_coordinates,
-        sample_in_bbox=cfg.data.sample_in_bbox,
         sampling=cfg.data.sampling,
     )
     val_sampler = DistributedSampler(
@@ -644,7 +642,7 @@ def main(cfg: DictConfig) -> None:
             logger=logger,
             tb_writer=writer,
             epoch_index=epoch,
-            use_sdf_basis=cfg.model.use_sdf_in_basis_func,
+            use_sdf_basis=cfg.model.use_sdf,
             use_surface_normals=cfg.model.use_surface_normals,
             integral_scaling_factor=initial_integral_factor,
             loss_fn_type=cfg.model.loss_function,

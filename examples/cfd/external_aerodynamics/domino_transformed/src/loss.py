@@ -377,65 +377,6 @@ def loss_fn_area(
 
     return loss
 
-
-def integral_loss_fn(
-    output, target, area, normals, stream_velocity=None, padded_value=-10
-):
-    drag_loss = drag_loss_fn(
-        output, target, area, normals, stream_velocity=stream_velocity, padded_value=-10
-    )
-    lift_loss = lift_loss_fn(
-        output, target, area, normals, stream_velocity=stream_velocity, padded_value=-10
-    )
-    return lift_loss + drag_loss
-
-
-def lift_loss_fn(output, target, area, normals, stream_velocity=None, padded_value=-10):
-    vel_inlet = stream_velocity  # Get this from the dataset
-    mask = abs(target - padded_value) > 1e-3
-
-    output_true = target * mask * area * (vel_inlet) ** 2.0
-    output_pred = output * mask * area * (vel_inlet) ** 2.0
-
-    normals = torch.select(normals, 2, 2)
-    # output_true_0 = output_true[:, :, 0]
-    output_true_0 = output_true.select(2, 0)
-    output_pred_0 = output_pred.select(2, 0)
-
-    pres_true = output_true_0 * normals
-    pres_pred = output_pred_0 * normals
-
-    wz_true = output_true[:, :, -1]
-    wz_pred = output_pred[:, :, -1]
-
-    masked_pred = torch.mean(pres_pred + wz_pred, (1))
-    masked_truth = torch.mean(pres_true + wz_true, (1))
-
-    loss = (masked_pred - masked_truth) ** 2.0
-    loss = torch.mean(loss)
-    return loss
-
-
-def drag_loss_fn(output, target, area, normals, stream_velocity=None, padded_value=-10):
-    vel_inlet = stream_velocity  # Get this from the dataset
-    mask = abs(target - padded_value) > 1e-3
-    output_true = target * mask * area * (vel_inlet) ** 2.0
-    output_pred = output * mask * area * (vel_inlet) ** 2.0
-
-    pres_true = output_true[:, :, 0] * normals[:, :, 0]
-    pres_pred = output_pred[:, :, 0] * normals[:, :, 0]
-
-    wx_true = output_true[:, :, 1]
-    wx_pred = output_pred[:, :, 1]
-
-    masked_pred = torch.mean(pres_pred + wx_pred, (1))
-    masked_truth = torch.mean(pres_true + wx_true, (1))
-
-    loss = (masked_pred - masked_truth) ** 2.0
-    loss = torch.mean(loss)
-    return loss
-
-
 def compute_loss_dict(
     prediction_vol: torch.Tensor,
     prediction_surf: torch.Tensor,
@@ -533,18 +474,6 @@ def compute_loss_dict(
         loss_dict["loss_surf"] = loss_surf
         total_loss_terms.append(loss_surf_area)
         loss_dict["loss_surf_area"] = loss_surf_area
-        loss_integral = (
-            integral_loss_fn(
-                prediction_surf,
-                target_surf,
-                surface_areas,
-                surface_normals,
-                stream_velocity,
-                padded_value=-10,
-            )
-        ) * integral_scaling_factor
-        loss_dict["loss_integral"] = loss_integral
-        total_loss_terms.append(loss_integral)
 
     total_loss = sum(total_loss_terms)
     loss_dict["total_loss"] = total_loss

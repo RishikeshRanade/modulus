@@ -34,20 +34,22 @@ class AggregationModel(Mlp):
     to predict the final output quantities. It serves as the final prediction layer
     that integrates all available information sources.
 
-    The architecture is a straightforward MLP with 5 total layers (4 hidden + 1 output).
+    The architecture is an MLP with configurable depth (default 2 hidden layers)
+    and width. Kept shallow/narrow by default since it only maps fused features
+    to a scalar per variable.
 
     Parameters
     ----------
     input_features : int
-        Number of input features, typically the sum of basis function features,
-        positional encoding features, geometry encoding features, and optionally
-        parameter encoding features.
+        Number of input features (e.g. fusion_dim).
     output_features : int
         Number of output features (typically 1 for scalar field prediction).
     base_layer : int
         Number of neurons in each hidden layer.
     activation : nn.Module
         The activation function to use between layers.
+    num_hidden_layers : int, optional
+        Number of hidden layers. Default 2. Use 2--3 for readout; more is rarely needed.
 
     Forward
     -------
@@ -90,8 +92,9 @@ class AggregationModel(Mlp):
         output_features: int,
         base_layer: int,
         activation: nn.Module,
+        num_hidden_layers: int = 2,
     ):
-        hidden_features = [base_layer, base_layer, base_layer, base_layer]
+        hidden_features = [base_layer] * num_hidden_layers
 
         super().__init__(
             in_features=input_features,

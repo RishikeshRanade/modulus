@@ -181,8 +181,9 @@ def main(cfg: DictConfig):
         to_absolute_path(os.path.join(cfg.resume_dir, cfg.eval.checkpoint_name)),
         map_location=dist.device,
     )
-
-    model.load_state_dict(checkpoint)
+    # Support both raw state_dict and dict with "model" key
+    state_dict = checkpoint.get("model", checkpoint) if isinstance(checkpoint, dict) else checkpoint
+    model.load_state_dict(state_dict)
 
     print("Model loaded")
 
@@ -250,6 +251,17 @@ def main(cfg: DictConfig):
 
         # Center of mass calculation
         center_of_mass = calculate_center_of_mass(stl_centers, stl_sizes)
+
+        # Scale invariance: same as datapipe (divide position-like coords by reference_scale)
+        scale_invariance = getattr(cfg.data, "scale_invariance", False)
+        reference_scale = getattr(cfg.data, "reference_scale", None)
+        if scale_invariance and reference_scale is not None:
+            ref_scale_tensor = (
+                torch.tensor(reference_scale, dtype=torch.float32, device=dist.device)
+                .reshape(1, 3)
+            )
+        else:
+            ref_scale_tensor = None
 
         s_max = (
             torch.from_numpy(np.asarray(cfg.data.bounding_box_surface.max))
@@ -409,6 +421,9 @@ def main(cfg: DictConfig):
                 surface_neighbors = normalize(surface_neighbors, s_max, s_min)
             else:
                 center_of_mass_normalized = center_of_mass
+            if ref_scale_tensor is not None:
+                surface_coordinates = surface_coordinates / ref_scale_tensor
+                surface_neighbors = surface_neighbors / ref_scale_tensor
             pos_surface_center_of_mass = surface_coordinates - center_of_mass_normalized
 
         else:
@@ -462,6 +477,10 @@ def main(cfg: DictConfig):
                 normed_stl_vertices_vol = normalize(stl_vertices, c_max, c_min)
             else:
                 center_of_mass_normalized = center_of_mass
+            if ref_scale_tensor is not None:
+                volume_coordinates = volume_coordinates / ref_scale_tensor
+                grid = grid / ref_scale_tensor
+                normed_stl_vertices_vol = normed_stl_vertices_vol / ref_scale_tensor
 
             # SDF calculation on the grid using WARP
             time_start = time.time()
@@ -495,6 +514,8 @@ def main(cfg: DictConfig):
         # print(f"Processed sdf and normalized")
 
         geom_centers = stl_vertices
+        if ref_scale_tensor is not None:
+            geom_centers = geom_centers / ref_scale_tensor
         # print(f"Geom centers max: {np.amax(geom_centers, axis=0)}, min: {np.amin(geom_centers, axis=0)}")
 
         if model_type == "combined":

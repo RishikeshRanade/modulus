@@ -151,16 +151,14 @@ DEFAULT_MODEL_PARAMS = Config(
         "model_type": "combined",
         "activation": "gelu",
         "interp_res": [128, 64, 64],
-        "use_sdf_in_basis_func": True,
+        "use_sdf": True,
         "surface_neighbors": True,
         "num_neighbors_surface": 7,
         "num_neighbors_volume": 10,
         "use_surface_normals": True,
         "use_surface_area": True,
         "encode_parameters": False,
-        "geometry_encoding_type": "both",
         "solution_calculation_mode": "two-loop",
-        "position_encoder_base_neurons": 0,
         "geometry_rep": {
             "use_token_direct": True,
             "token_hidden_dim": 256,
@@ -178,16 +176,7 @@ DEFAULT_MODEL_PARAMS = Config(
             },
             "geo_processor": {
                 "activation": "gelu",
-                "self_attention": False,
-                "cross_attention": False,
             },
-        },
-        "geometry_local": {
-            "base_layer": 512,
-            "volume_neighbors_in_radius": [64, 128],
-            "surface_neighbors_in_radius": [32, 128],
-            "volume_radii": [0.1, 0.25],
-            "surface_radii": [0.05, 0.25],
         },
         "nn_basis_functions": {
             "base_layer": 512,
@@ -196,7 +185,8 @@ DEFAULT_MODEL_PARAMS = Config(
             "activation": "gelu",
         },
         "aggregation_model": {
-            "base_layer": 512,
+            "base_layer": 256,
+            "num_hidden_layers": 2,
             "activation": "gelu",
         },
         "parameter_model": {

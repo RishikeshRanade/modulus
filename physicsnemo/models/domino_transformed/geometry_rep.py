@@ -220,7 +220,7 @@ class CrossBallQueryFeatures(Module):
         neighbors_in_radius: int,
         out_dim: int,
         hidden_dim: int | None = None,
-        eps: float = 1e-6,
+        eps: float = 1e-3,
     ):
         super().__init__(meta=None)
         self.radius = radius
@@ -258,8 +258,7 @@ class CrossBallQueryFeatures(Module):
             )
             # inds (N_tok, K), neighbor_pts (N_tok, K, 3), dists (N_tok, K)
             q = tokens[b].unsqueeze(1)
-            dists_safe = dists.unsqueeze(-1).clamp(min=self.eps)
-            direction = (neighbor_pts - q) / dists_safe
+            direction = (neighbor_pts - q)
             rel_pos = neighbor_pts - q
             feats = torch.cat(
                 (dists.unsqueeze(-1), direction, rel_pos), dim=-1
@@ -267,6 +266,7 @@ class CrossBallQueryFeatures(Module):
             feats = feats.reshape(N_tok, -1)
             out_b = self.mlp(feats)
             out_list.append(out_b)
+
         return torch.stack(out_list, dim=0)
 
 
@@ -330,9 +330,6 @@ class GeometryRep(Module):
     ):
         super().__init__(meta=None)
         geometry_rep = model_parameters.geometry_rep
-        self.geo_encoding_type = model_parameters.geometry_encoding_type
-        self.cross_attention = geometry_rep.geo_processor.cross_attention
-        self.self_attention = geometry_rep.geo_processor.self_attention
         self.activation_conv = get_activation(geometry_rep.geo_conv.activation)
         self.activation_processor = geometry_rep.geo_processor.activation
         self.use_token_direct = getattr(geometry_rep, "use_token_direct", False)

@@ -183,11 +183,11 @@ class SolutionCalculatorVolume(Module):
         The parameter encoding model (required if ``encode_parameters=True``).
     aggregation_model : nn.ModuleList
         List of aggregation models, one per output variable.
-    nn_basis : nn.ModuleList
-        List of neural network basis function models, one per output variable.
-    fusion_module : HierarchicalFusion | None, optional
-        If set, use hierarchical fusion of basis, geometry, and global_embedding
-        instead of concatenating basis, encoding_node, encoding_g.
+    nn_basis : nn.Module
+        Shared neural network basis function module (same for all output variables).
+    fusion_module : HierarchicalFusion | None
+        Required. Hierarchical fusion of basis, geometry, and global_embedding
+        (DoMINO is fusion-only).
 
     Forward
     -------
@@ -196,9 +196,9 @@ class SolutionCalculatorVolume(Module):
     encoding_g : torch.Tensor
         Geometry encoding of shape :math:`(B, N_{vol}, D_{geo})`.
     encoding_node : torch.Tensor | None
-        Node positional encoding of shape :math:`(B, N_{vol}, D_{pos})`. Required when fusion_module is None.
-    global_embedding : torch.Tensor | None
-        Global embedding of shape :math:`(B, N_{vol}, D_{global})`. Required when fusion_module is not None.
+        Unused (kept for API compatibility). DoMINO uses fusion path only.
+    global_embedding : torch.Tensor
+        Global embedding of shape :math:`(B, N_{vol}, D_{global})`. Required.
     global_params_values : torch.Tensor
         Global parameter values of shape :math:`(B, N_{params}, 1)`.
     global_params_reference : torch.Tensor
@@ -227,7 +227,7 @@ class SolutionCalculatorVolume(Module):
         return_volume_neighbors: bool,
         parameter_model: nn.Module | None,
         aggregation_model: nn.ModuleList,
-        nn_basis: nn.ModuleList,
+        nn_basis: nn.Module,
         fusion_module: HierarchicalFusion | None = None,
     ):
         super().__init__(meta=None)
@@ -256,6 +256,7 @@ class SolutionCalculatorVolume(Module):
         global_embedding: Float[torch.Tensor, "batch num_vol global_dim"] | None,
         global_params_values: Float[torch.Tensor, "batch num_params 1"],
         global_params_reference: Float[torch.Tensor, "batch num_params 1"],
+        num_sample_points: int | None = None,
     ) -> (
         Float[torch.Tensor, "batch num_vol num_vars"]
         | tuple[
@@ -280,12 +281,20 @@ class SolutionCalculatorVolume(Module):
             Global parameter values of shape :math:`(B, N_{params}, 1)`.
         global_params_reference : torch.Tensor
             Global parameter reference values of shape :math:`(B, N_{params}, 1)`.
+        num_sample_points : int | None, optional
+            Number of sample points (center + neighbors) to use. If ``None``,
+            uses the value set at construction (``self.num_sample_points``).
 
         Returns
         -------
         torch.Tensor | tuple
             Output predictions, optionally with neighbor information.
         """
+        n_samples = (
+            num_sample_points
+            if num_sample_points is not None
+            else self.num_sample_points
+        )
         # Input validation
         if not torch.compiler.is_compiling():
             if volume_mesh_centers.ndim != 3 or volume_mesh_centers.shape[-1] != 3:
@@ -299,27 +308,20 @@ class SolutionCalculatorVolume(Module):
                     f"got {encoding_g.ndim}D with shape {tuple(encoding_g.shape)}"
                 )
             if self.fusion_module is None:
-                if encoding_node is None:
-                    raise ValueError(
-                        "encoding_node is required when fusion_module is not set"
-                    )
-                if encoding_node.ndim != 3:
-                    raise ValueError(
-                        f"Expected encoding_node to be 3D (B, N, D), "
-                        f"got {encoding_node.ndim}D with shape {tuple(encoding_node.shape)}"
-                    )
-            else:
-                if global_embedding is None:
-                    raise ValueError(
-                        "global_embedding is required when fusion_module is set"
-                    )
-                if global_embedding.ndim != 3:
-                    raise ValueError(
-                        f"Expected global_embedding to be 3D (B, N, D), "
-                        f"got {global_embedding.ndim}D with shape {tuple(global_embedding.shape)}"
-                    )
+                raise ValueError(
+                    "DoMINO is fusion-only; fusion_module is required"
+                )
+            if global_embedding is None:
+                raise ValueError(
+                    "global_embedding is required when fusion_module is set"
+                )
+            if global_embedding.ndim != 3:
+                raise ValueError(
+                    f"Expected global_embedding to be 3D (B, N, D), "
+                    f"got {global_embedding.ndim}D with shape {tuple(global_embedding.shape)}"
+                )
 
-        # Compute parameter encoding / global embedding if enabled
+        # Compute parameter encoding if enabled (used inside global_embedding from model)
         if self.encode_parameters:
             param_encoding = apply_parameter_encoding(
                 volume_mesh_centers, global_params_values, global_params_reference
@@ -331,8 +333,8 @@ class SolutionCalculatorVolume(Module):
 
         if self.return_volume_neighbors:
             # Sample neighbors in a hierarchical pattern (1-hop and 2-hop)
-            num_hop1 = self.num_sample_points
-            num_hop2 = self.num_sample_points // 2 if self.num_sample_points != 1 else 1
+            num_hop1 = n_samples
+            num_hop2 = n_samples // 2 if n_samples != 1 else 1
             neighbors = defaultdict(list)
 
             # Sample 1-hop neighbors
@@ -367,9 +369,9 @@ class SolutionCalculatorVolume(Module):
         else:
             # Sample neighbors uniformly in sphere
             volume_m_c_sample = sample_sphere(
-                volume_mesh_centers, 1 / self.noise_intensity, self.num_sample_points
+                volume_mesh_centers, 1 / self.noise_intensity, n_samples
             )
-            for i in range(self.num_sample_points):
+            for i in range(n_samples):
                 volume_m_c_perturbed.append(volume_m_c_sample[:, :, i : i + 1, :])
 
             volume_m_c_perturbed = torch.cat(volume_m_c_perturbed, dim=2)
@@ -385,18 +387,13 @@ class SolutionCalculatorVolume(Module):
                         volume_m_c - volume_mesh_centers, dim=-1, keepdim=True
                     )
 
-                # Compute basis functions and aggregate features
-                basis_f = self.nn_basis[f](volume_m_c)
-                if self.fusion_module is not None:
-                    output = self.fusion_module(
-                        basis_f, encoding_g, global_embedding
-                    )
-                else:
-                    output = torch.cat((basis_f, encoding_node, encoding_g), dim=-1)
-                    if self.encode_parameters:
-                        output = torch.cat((output, param_encoding), dim=-1)
+                # Fusion path only: basis + geometry + global -> fused representation
+                basis_f = self.nn_basis(volume_m_c)
+                output = self.fusion_module(
+                    basis_f, encoding_g, global_embedding
+                )
 
-                # Apply aggregation model with inverse distance weighting
+                # Apply aggregation model (per-variable) with inverse distance weighting
                 if p == 0:
                     output_center = self.aggregation_model[f](output)
                 else:
@@ -418,7 +415,7 @@ class SolutionCalculatorVolume(Module):
                 field_neighbors[f] = torch.stack(field_neighbors[f], dim=2)
 
             # Combine center prediction with neighbor-averaged prediction
-            if self.num_sample_points > 1:
+            if n_samples > 1:
                 output_res = 0.5 * output_center + 0.5 * output_neighbor / dist_sum
             else:
                 output_res = output_center
@@ -462,10 +459,11 @@ class SolutionCalculatorSurface(Module):
         The parameter encoding model (required if ``encode_parameters=True``).
     aggregation_model : nn.ModuleList
         List of aggregation models, one per output variable.
-    nn_basis : nn.ModuleList
-        List of neural network basis function models, one per output variable.
-    fusion_module : HierarchicalFusion | None, optional
-        If set, use hierarchical fusion of basis, geometry, and global_embedding.
+    nn_basis : nn.Module
+        Shared neural network basis function module (same for all output variables).
+    fusion_module : HierarchicalFusion | None
+        Required. Hierarchical fusion of basis, geometry, and global_embedding
+        (DoMINO is fusion-only).
 
     Forward
     -------
@@ -474,9 +472,9 @@ class SolutionCalculatorSurface(Module):
     encoding_g : torch.Tensor
         Geometry encoding of shape :math:`(B, N_{surf}, D_{geo})`.
     encoding_node : torch.Tensor | None
-        Node positional encoding of shape :math:`(B, N_{surf}, D_{pos})`. Required when fusion_module is None.
-    global_embedding : torch.Tensor | None
-        Global embedding of shape :math:`(B, N_{surf}, D_{global})`. Required when fusion_module is not None.
+        Unused (kept for API compatibility). DoMINO uses fusion path only.
+    global_embedding : torch.Tensor
+        Global embedding of shape :math:`(B, N_{surf}, D_{global})`. Required.
     surface_mesh_neighbors : torch.Tensor
         Surface mesh neighbor coordinates of shape :math:`(B, N_{surf}, K, 3)`.
     surface_normals : torch.Tensor
@@ -512,7 +510,7 @@ class SolutionCalculatorSurface(Module):
         use_surface_area: bool,
         parameter_model: nn.Module | None,
         aggregation_model: nn.ModuleList,
-        nn_basis: nn.ModuleList,
+        nn_basis: nn.Module,
         fusion_module: HierarchicalFusion | None = None,
     ):
         super().__init__(meta=None)
@@ -547,6 +545,7 @@ class SolutionCalculatorSurface(Module):
         surface_neighbors_areas: Float[torch.Tensor, "batch num_surf num_neighbors 1"],
         global_params_values: Float[torch.Tensor, "batch num_params 1"],
         global_params_reference: Float[torch.Tensor, "batch num_params 1"],
+        num_sample_points: int | None = None,
     ) -> Float[torch.Tensor, "batch num_surf num_vars"]:
         r"""
         Function to approximate solution given the neighborhood information.
@@ -573,12 +572,20 @@ class SolutionCalculatorSurface(Module):
             Global parameter values of shape :math:`(B, N_{params}, 1)`.
         global_params_reference : torch.Tensor
             Global parameter reference values of shape :math:`(B, N_{params}, 1)`.
+        num_sample_points : int | None, optional
+            Number of sample points (center + neighbors) to use. If ``None``,
+            uses the value set at construction (``self.num_sample_points``).
 
         Returns
         -------
         torch.Tensor
             Output predictions of shape :math:`(B, N_{surf}, N_{vars})`.
         """
+        n_samples = (
+            num_sample_points
+            if num_sample_points is not None
+            else self.num_sample_points
+        )
         # Input validation
         if not torch.compiler.is_compiling():
             if surface_mesh_centers.ndim != 3 or surface_mesh_centers.shape[-1] != 3:
@@ -592,25 +599,18 @@ class SolutionCalculatorSurface(Module):
                     f"got {encoding_g.ndim}D with shape {tuple(encoding_g.shape)}"
                 )
             if self.fusion_module is None:
-                if encoding_node is None:
-                    raise ValueError(
-                        "encoding_node is required when fusion_module is not set"
-                    )
-                if encoding_node.ndim != 3:
-                    raise ValueError(
-                        f"Expected encoding_node to be 3D (B, N, D), "
-                        f"got {encoding_node.ndim}D with shape {tuple(encoding_node.shape)}"
-                    )
-            else:
-                if global_embedding is None:
-                    raise ValueError(
-                        "global_embedding is required when fusion_module is set"
-                    )
-                if global_embedding.ndim != 3:
-                    raise ValueError(
-                        f"Expected global_embedding to be 3D (B, N, D), "
-                        f"got {global_embedding.ndim}D with shape {tuple(global_embedding.shape)}"
-                    )
+                raise ValueError(
+                    "DoMINO is fusion-only; fusion_module is required"
+                )
+            if global_embedding is None:
+                raise ValueError(
+                    "global_embedding is required when fusion_module is set"
+                )
+            if global_embedding.ndim != 3:
+                raise ValueError(
+                    f"Expected global_embedding to be 3D (B, N, D), "
+                    f"got {global_embedding.ndim}D with shape {tuple(global_embedding.shape)}"
+                )
             if (
                 surface_mesh_neighbors.ndim != 4
                 or surface_mesh_neighbors.shape[-1] != 3
@@ -638,13 +638,13 @@ class SolutionCalculatorSurface(Module):
         # Optionally add surface normals
         if self.use_surface_normals:
             centers_inputs.append(surface_normals)
-            if self.num_sample_points > 1:
+            if n_samples > 1:
                 neighbors_inputs.append(surface_neighbors_normals)
 
         # Optionally add surface areas (log-scaled for numerical stability)
         if self.use_surface_area:
             centers_inputs.append(torch.log(surface_areas) / 10)
-            if self.num_sample_points > 1:
+            if n_samples > 1:
                 neighbors_inputs.append(torch.log(surface_neighbors_areas) / 10)
 
         # Concatenate all input features
@@ -653,7 +653,7 @@ class SolutionCalculatorSurface(Module):
 
         # Compute predictions for each variable
         for f in range(self.num_variables):
-            for p in range(self.num_sample_points):
+            for p in range(n_samples):
                 if p == 0:
                     # Use center point
                     volume_m_c = surface_mesh_centers
@@ -663,18 +663,13 @@ class SolutionCalculatorSurface(Module):
                     noise = surface_mesh_centers - volume_m_c
                     dist = torch.norm(noise, dim=-1, keepdim=True)
 
-                # Compute basis functions and aggregate features
-                basis_f = self.nn_basis[f](volume_m_c)
-                if self.fusion_module is not None:
-                    output = self.fusion_module(
-                        basis_f, encoding_g, global_embedding
-                    )
-                else:
-                    output = torch.cat((basis_f, encoding_node, encoding_g), dim=-1)
-                    if self.encode_parameters:
-                        output = torch.cat((output, param_encoding), dim=-1)
+                # Fusion path only: basis + geometry + global -> fused representation
+                basis_f = self.nn_basis(volume_m_c)
+                output = self.fusion_module(
+                    basis_f, encoding_g, global_embedding
+                )
 
-                # Apply aggregation model with inverse distance weighting
+                # Apply aggregation model (per-variable) with inverse distance weighting
                 if p == 0:
                     output_center = self.aggregation_model[f](output)
                 else:
@@ -690,7 +685,7 @@ class SolutionCalculatorSurface(Module):
                         dist_sum += 1.0 / dist
 
             # Combine center prediction with neighbor-averaged prediction
-            if self.num_sample_points > 1:
+            if n_samples > 1:
                 output_res = 0.5 * output_center + 0.5 * output_neighbor / dist_sum
             else:
                 output_res = output_center

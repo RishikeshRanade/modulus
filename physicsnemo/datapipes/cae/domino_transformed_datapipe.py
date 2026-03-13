@@ -59,14 +59,6 @@ from physicsnemo.nn.functional import knn, signed_distance_field
 from physicsnemo.utils.profiling import profile
 
 
-class BoundingBox(Protocol):
-    """
-    Type definition for the required format of bounding box dimensions.
-    """
-
-    min: Sequence
-    max: Sequence
-
 
 @dataclass
 class DoMINODataConfig:
@@ -83,8 +75,6 @@ class DoMINODataConfig:
             If set, and scaling_type is:
             - min_max_scaling -> rescale surface_fields to the min/max set here
             - mean_std_scaling -> rescale surface_fields to the mean and std set here.
-        bounding_box_dims_surf: (Surface specific) Dimensions of bounding box. Must be an object with min/max
-            attributes that are arraylike.
         volume_variables: (Volume specific) Names of volume variables.
         volume_points_sample: (Volume specific) Number of volume points to sample per batch.
         volume_sample_from_disk: (Volume specific) If the volume data is in a shuffled state on disk,
@@ -94,19 +84,7 @@ class DoMINODataConfig:
             If set, and scaling_type is:
             - min_max_scaling -> rescale volume_fields to the min/max set here
             - mean_std_scaling -> rescale volume_fields to the mean and std set here.
-        bounding_box_dims: (Volume specific) Dimensions of bounding box. Must be an object with min/max
-            attributes that are arraylike.
-        grid_resolution: Resolution of the latent grid.
         normalize_coordinates: Whether to normalize coordinates based on min/max values.
-            For surfaces: uses s_min/s_max, defined from:
-            - Surface bounding box, if defined.
-            - Min/max of the stl_vertices
-            For volumes: uses c_min/c_max, defined from:
-            - Volume bounding_box if defined,
-            - 1.5x s_min/max otherwise, except c_min[2] = s_min[2] in this case
-        sample_in_bbox: Whether to sample points in a specified bounding box.
-            Uses the same min/max points as coordinate normalization.
-            Only performed if compute_scaling_factors is false.
         sampling: Whether to downsample the full resolution mesh to fit in GPU memory.
             Surface and volume sampling points are configured separately as:
             - surface.points_sample
@@ -129,6 +107,9 @@ class DoMINODataConfig:
             Applies to the surf_grid and similiar tensors.
         shard_points: Whether to shard the points across GPUs for domain parallelism.
             Applies to the volume_fields/surface_fields and similiar tensors.
+        use_sdf: Whether to compute signed distance field for volume points (for use in basis).
+        scale_invariance: If True, divide position-like coordinates by reference_scale (x, y, z).
+        reference_scale: Length-3 scale [sx, sy, sz]. Required when scale_invariance is True.
     """
 
     data_path: Path | None
@@ -159,6 +140,10 @@ class DoMINODataConfig:
 
     shard_grid: bool = False
     shard_points: bool = False
+    use_sdf: bool = True
+
+    scale_invariance: bool = False
+    reference_scale: list[float] | None = None
 
     def __post_init__(self):
         if self.data_path is not None:
@@ -196,6 +181,18 @@ class DoMINODataConfig:
                 raise ValueError(
                     f"scaling_type should be one of ['min_max_scaling', 'mean_std_scaling'], got {self.scaling_type}"
                 )
+
+        if self.scale_invariance:
+            if self.reference_scale is None:
+                raise ValueError(
+                    "reference_scale must be set if scale_invariance is enabled"
+                )
+            self.reference_scale = list(self.reference_scale)
+            if len(self.reference_scale) != 3:
+                raise ValueError("reference_scale must be a list of 3 floats")
+            self.reference_scale = (
+                torch.tensor(self.reference_scale, dtype=torch.float32).reshape(1, 3)
+            )
 
 
 ##### TODO
@@ -241,51 +238,6 @@ class DoMINODataPipe(Dataset):
         # Model type determines whether we process surface, volume, or both.
         self.model_type = model_type
 
-        # Update the arrays for bounding boxes:
-        if hasattr(self.config.bounding_box_dims, "max") and hasattr(
-            self.config.bounding_box_dims, "min"
-        ):
-            self.config.bounding_box_dims = [
-                torch.tensor(
-                    self.config.bounding_box_dims.max,
-                    device=self.preproc_device,
-                    dtype=torch.float32,
-                ),
-                torch.tensor(
-                    self.config.bounding_box_dims.min,
-                    device=self.preproc_device,
-                    dtype=torch.float32,
-                ),
-            ]
-            self.default_volume_grid = create_grid(
-                self.config.bounding_box_dims[0],
-                self.config.bounding_box_dims[1],
-                self.config.grid_resolution,
-            )
-
-        # And, do the surface bounding box if supplied:
-        if hasattr(self.config.bounding_box_dims_surf, "max") and hasattr(
-            self.config.bounding_box_dims_surf, "min"
-        ):
-            self.config.bounding_box_dims_surf = [
-                torch.tensor(
-                    self.config.bounding_box_dims_surf.max,
-                    device=self.preproc_device,
-                    dtype=torch.float32,
-                ),
-                torch.tensor(
-                    self.config.bounding_box_dims_surf.min,
-                    device=self.preproc_device,
-                    dtype=torch.float32,
-                ),
-            ]
-
-            self.default_surface_grid = create_grid(
-                self.config.bounding_box_dims_surf[0],
-                self.config.bounding_box_dims_surf[1],
-                self.config.grid_resolution,
-            )
-
         # Ensure the volume and surface scaling factors are torch tensors
         # and on the right device:
         if self.config.volume_factors is not None:
@@ -307,49 +259,6 @@ class DoMINODataPipe(Dataset):
 
         self.dataset = None
 
-    def compute_stl_scaling_and_surface_grids(
-        self,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Compute the min and max for the defining mesh.
-
-        If the user supplies a bounding box, we use that.  Otherwise,
-        it raises an error.
-
-        The returned min/max and grid are used for surface data.
-        """
-
-        # Check the bounding box is not unit length
-
-        if self.config.bounding_box_dims_surf is not None:
-            s_max = self.config.bounding_box_dims_surf[0]
-            s_min = self.config.bounding_box_dims_surf[1]
-            surf_grid = self.default_surface_grid
-        else:
-            raise ValueError("Bounding box dimensions are not set in config")
-
-        return s_min, s_max, surf_grid
-
-    def compute_volume_scaling_and_grids(
-        self,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Compute the min and max and grid for volume data.
-
-        If the user supplies a bounding box, we use that.  Otherwise,
-        it raises an error.
-
-        """
-
-        # Determine the volume min / max locations
-        if self.config.bounding_box_dims is not None:
-            c_max = self.config.bounding_box_dims[0]
-            c_min = self.config.bounding_box_dims[1]
-            volume_grid = self.default_volume_grid
-        else:
-            raise ValueError("Bounding box dimensions are not set in config")
-
-        return c_min, c_max, volume_grid
 
     @profile
     def downsample_geometry(
@@ -386,9 +295,8 @@ class DoMINODataPipe(Dataset):
         surface_normals: torch.Tensor,
         surface_sizes: torch.Tensor,
         surface_fields: torch.Tensor | None,
+        scale_factor: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
-        nx, ny, nz = self.config.grid_resolution
-
         return_dict = {}
 
         ########################################################################
@@ -465,6 +373,9 @@ class DoMINODataPipe(Dataset):
         if self.config.normalize_coordinates:
             surface_coordinates -= center_of_mass
             surface_neighbors -= center_of_mass
+        if self.config.scale_invariance and scale_factor is not None:
+            surface_coordinates = surface_coordinates / scale_factor
+            surface_neighbors = surface_neighbors / scale_factor
 
         ########################################################################
         # Apply scaling to the targets, if desired:
@@ -496,6 +407,7 @@ class DoMINODataPipe(Dataset):
         stl_vertices: torch.Tensor,
         stl_indices: torch.Tensor,
         volume_fields: torch.Tensor | None,
+        scale_factor: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
         """
         Preprocess the volume data.
@@ -541,6 +453,9 @@ class DoMINODataPipe(Dataset):
             normed_vertices = stl_vertices - center_of_mass
         else:
             normed_vertices = stl_vertices
+        if self.config.scale_invariance and scale_factor is not None:
+            volume_coordinates = volume_coordinates / scale_factor
+            normed_vertices = normed_vertices / scale_factor
 
         ########################################################################
         # Apply scaling to the targets, if desired:
@@ -627,10 +542,18 @@ class DoMINODataPipe(Dataset):
             data_dict["stl_centers"], data_dict["stl_areas"]
         )
 
+        scale_factor = (
+            self.config.reference_scale if self.config.scale_invariance else None
+        )
+
         # This will apply downsampling if needed to the geometry coordinates
         geom_centers = self.downsample_geometry(
             stl_vertices=data_dict["stl_coordinates"],
         )
+        if self.config.normalize_coordinates:
+            geom_centers = geom_centers - center_of_mass
+        if self.config.scale_invariance and scale_factor is not None:
+            geom_centers = geom_centers / scale_factor
         return_dict["geometry_coordinates"] = geom_centers
 
         ########################################################################
@@ -646,6 +569,7 @@ class DoMINODataPipe(Dataset):
                 surface_normals=data_dict["surface_normals"],
                 surface_sizes=data_dict["surface_areas"],
                 surface_fields=surface_fields_raw,
+                scale_factor=scale_factor,
             )
 
             return_dict.update(surface_dict)
@@ -662,8 +586,9 @@ class DoMINODataPipe(Dataset):
                 volume_coordinates=data_dict["volume_mesh_centers"],
                 center_of_mass=center_of_mass,
                 stl_vertices=data_dict["stl_coordinates"],
-                stl_indices=mesh_indices_flattened,
+                stl_indices=data_dict["stl_faces"],
                 volume_fields=volume_fields_raw,
+                scale_factor=scale_factor,
             )
 
             return_dict.update(volume_dict)
@@ -696,8 +621,34 @@ class DoMINODataPipe(Dataset):
                         Replicate(),
                     ]
                 )
+                if key == "volume_min_max":
+                    output_dict[key] = ShardTensor.from_local(
+                        value,
+                        mesh,
+                        [
+                            Replicate(),
+                        ],
+                    )
+                elif key == "surface_min_max":
+                    output_dict[key] = ShardTensor.from_local(
+                        value,
+                        mesh,
+                        [
+                            Replicate(),
+                        ],
+                    )
                 elif not isinstance(value, ShardTensor):
-                    output_dict[key] = scatter_tensor(
+                    if "grid" in key:
+                        output_dict[key] = scatter_tensor(
+                            value.contiguous(),
+                            global_index,
+                            mesh,
+                            grid_placements,
+                            global_shape=value.shape,
+                            dtype=value.dtype,
+                        )
+                    else:
+                        output_dict[key] = scatter_tensor(
                             value.contiguous(),
                             global_index,
                             mesh,
@@ -794,6 +745,12 @@ class DoMINODataPipe(Dataset):
         Pass a dataset to the datapipe to enable iterating over both in one pass.
         """
         self.dataset = dataset
+
+        if self.config.scale_invariance and self.config.reference_scale is not None:
+            if hasattr(self.dataset, "output_device"):
+                self.config.reference_scale = self.config.reference_scale.to(
+                    self.dataset.output_device
+                )
 
         if self.config.volume_sample_from_disk:
             # We deliberately double the data to read compared to the sampling size:
@@ -1053,7 +1010,6 @@ def create_domino_dataset(
     vol_factors: list[float],
     surf_factors: list[float],
     normalize_coordinates: bool = True,
-    sample_in_bbox: bool = True,
     sampling: bool = True,
     device_mesh: torch.distributed.DeviceMesh | None = None,
     placements: dict[str, torch.distributed.tensor.Placement] | None = None,
@@ -1140,13 +1096,16 @@ def create_domino_dataset(
             overrides["shard_grid"] = shard_grid
             overrides["shard_points"] = shard_points
 
+        if getattr(cfg.data, "scale_invariance", False):
+            overrides["scale_invariance"] = cfg.data.scale_invariance
+        if getattr(cfg.data, "reference_scale", None) is not None:
+            overrides["reference_scale"] = list(cfg.data.reference_scale)
+
         datapipe = DoMINODataPipe(
             input_path,
             phase=phase,
-            grid_resolution=cfg.model.interp_res,
             normalize_coordinates=normalize_coordinates,
             sampling=sampling,
-            sample_in_bbox=sample_in_bbox,
             volume_points_sample=cfg.model.volume_points_sample,
             surface_points_sample=cfg.model.surface_points_sample,
             geom_points_sample=cfg.model.geom_points_sample,
@@ -1154,11 +1113,10 @@ def create_domino_dataset(
             surface_factors=surf_factors,
             scaling_type=cfg.model.normalization,
             model_type=model_type,
-            bounding_box_dims=cfg.data.bounding_box,
-            bounding_box_dims_surf=cfg.data.bounding_box_surface,
             volume_sample_from_disk=cfg.data.volume_sample_from_disk,
             num_surface_neighbors=cfg.model.num_neighbors_surface,
             surface_sampling_algorithm=cfg.model.surface_sampling_algorithm,
+            use_sdf=cfg.model.use_sdf,
             **overrides,
         )
 
@@ -1172,5 +1130,4 @@ if __name__ == "__main__":
         data_path="/code/processed_data/new_models_1/",
         phase="train",
         sampling=False,
-        sample_in_bbox=False,
     )

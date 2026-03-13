@@ -35,7 +35,7 @@ from physicsnemo.nn import FourierMLP, get_activation
 
 from .config import DEFAULT_MODEL_PARAMS, Config
 from .fusion import HierarchicalFusion
-from .geometry_rep import GeometryRep, scale_sdf
+from .geometry_rep import GeometryRep
 from .mlps import AggregationModel
 from .solutions import (
     SolutionCalculatorSurface,
@@ -54,23 +54,11 @@ def _fusion_geometry_dims(fusion_cfg: Any) -> tuple[Any, Any]:
     )
 
 
-def _aggregation_input_size(
-    use_hierarchical_fusion: bool,
-    fusion_cfg: Any,
-    base_layer_geo: int,
-    base_layer_nn: int,
-    base_layer_p: int,
-    position_encoder_base_neurons: int,
-) -> int:
-    """Compute aggregation model input size for one branch (surface or volume)."""
-    if use_hierarchical_fusion and fusion_cfg is not None:
-        return fusion_cfg.fusion_dim
-    return (
-        position_encoder_base_neurons
-        + base_layer_nn
-        + base_layer_geo
-        + base_layer_p
-    )
+def _fusion_aggregation_input_dim(fusion_cfg: Any) -> int:
+    """Aggregation model input dimension when using fusion only (fusion_dim)."""
+    if fusion_cfg is None:
+        raise ValueError("fusion config is required for DoMINO (fusion-only mode)")
+    return fusion_cfg.fusion_dim
 
 
 def _build_fusion_module(
@@ -266,7 +254,6 @@ class DoMINO(Module):
         self.use_surface_normals = model_parameters.use_surface_normals
         self.use_surface_area = model_parameters.use_surface_area
         self.encode_parameters = model_parameters.encode_parameters
-        self.geo_encoding_type = model_parameters.geometry_encoding_type
 
         if self.use_surface_normals:
             if not self.use_surface_area:
@@ -277,7 +264,7 @@ class DoMINO(Module):
             input_features_surface = input_features
 
         if self.encode_parameters:
-            # Defining the parameter model
+            # Only build parameter_model when encode_parameters is True (config.model.encode_parameters).
             base_layer_p = model_parameters.parameter_model.base_layer
             self.parameter_model = FourierMLP(
                 input_features=self.global_features,
@@ -288,6 +275,7 @@ class DoMINO(Module):
             )
         else:
             base_layer_p = 0
+            self.parameter_model = None  # Used only when encode_parameters is True
 
         fusion_cfg = getattr(model_parameters, "fusion", None)
         geo_vol_out, geo_surf_out = _fusion_geometry_dims(fusion_cfg)
@@ -309,57 +297,41 @@ class DoMINO(Module):
 
         # Basis functions for surface and volume
         base_layer_nn = model_parameters.nn_basis_functions.base_layer
-        position_encoder_base_neurons = getattr(
-            model_parameters, "position_encoder_base_neurons", 0
-        )
-        self.use_hierarchical_fusion = (
-            fusion_cfg is not None
-            and getattr(fusion_cfg, "use_hierarchical_fusion", False)
-        )
-        use_hierarchical_fusion = self.use_hierarchical_fusion
+        # Fusion-only: require hierarchical fusion
+        if fusion_cfg is None or not getattr(fusion_cfg, "use_hierarchical_fusion", False):
+            raise ValueError(
+                "DoMINO requires fusion.use_hierarchical_fusion=True (fusion-only mode)"
+            )
+        self.use_hierarchical_fusion = True
+        # Shared basis per branch (one FourierMLP for all variables; aggregation is per-variable)
         if self.output_features_surf is not None:
-            self.nn_basis_surf = nn.ModuleList()
-            for _ in range(
-                self.num_variables_surf
-            ):  # Have the same basis function for each variable
-                self.nn_basis_surf.append(
-                    FourierMLP(
-                        input_features=input_features_surface,
-                        base_layer=model_parameters.nn_basis_functions.base_layer,
-                        fourier_features=model_parameters.nn_basis_functions.fourier_features,
-                        num_modes=model_parameters.nn_basis_functions.num_modes,
-                        activation=get_activation(
-                            model_parameters.nn_basis_functions.activation
-                        ),
-                    )
-                )
+            self.nn_basis_surf = FourierMLP(
+                input_features=input_features_surface,
+                base_layer=model_parameters.nn_basis_functions.base_layer,
+                fourier_features=model_parameters.nn_basis_functions.fourier_features,
+                num_modes=model_parameters.nn_basis_functions.num_modes,
+                activation=get_activation(
+                    model_parameters.nn_basis_functions.activation
+                ),
+            )
 
         if self.output_features_vol is not None:
-            self.nn_basis_vol = nn.ModuleList()
-            for _ in range(
-                self.num_variables_vol
-            ):  # Have the same basis function for each variable
-                self.nn_basis_vol.append(
-                    FourierMLP(
-                        input_features=input_features,
-                        base_layer=model_parameters.nn_basis_functions.base_layer,
-                        fourier_features=model_parameters.nn_basis_functions.fourier_features,
-                        num_modes=model_parameters.nn_basis_functions.num_modes,
-                        activation=get_activation(
-                            model_parameters.nn_basis_functions.activation
-                        ),
-                    )
-                )
+            self.nn_basis_vol = FourierMLP(
+                input_features=input_features,
+                base_layer=model_parameters.nn_basis_functions.base_layer,
+                fourier_features=model_parameters.nn_basis_functions.fourier_features,
+                num_modes=model_parameters.nn_basis_functions.num_modes,
+                activation=get_activation(
+                    model_parameters.nn_basis_functions.activation
+                ),
+            )
 
         # Positional encoding
         self.activation = get_activation(model_parameters.activation)
-        self.use_sdf_in_basis_func = model_parameters.use_sdf_in_basis_func
+        self.use_sdf = model_parameters.use_sdf
 
-        # Aggregation model for surface
+        # Fusion + aggregation for surface (fusion-only)
         if self.output_features_surf is not None:
-            base_layer_geo_surf = sum(
-                model_parameters.geometry_local.surface_neighbors_in_radius
-            )
             global_dim_surf = (
                 base_layer_p
                 if self.encode_parameters
@@ -371,22 +343,20 @@ class DoMINO(Module):
                 getattr(fusion_cfg, "geometry_dim_surface", 0) or 0,
                 global_dim_surf,
             )
-            agg_input_surf = _aggregation_input_size(
-                use_hierarchical_fusion,
-                fusion_cfg,
-                base_layer_geo_surf,
-                base_layer_nn,
-                base_layer_p,
-                position_encoder_base_neurons,
+            agg_input_surf = _fusion_aggregation_input_dim(fusion_cfg)
+            agg_base = model_parameters.aggregation_model.base_layer
+            agg_layers = getattr(
+                model_parameters.aggregation_model, "num_hidden_layers", 2
             )
             self.agg_model_surf = nn.ModuleList(
                 AggregationModel(
                     input_features=agg_input_surf,
                     output_features=1,
-                    base_layer=model_parameters.aggregation_model.base_layer,
+                    base_layer=agg_base,
                     activation=get_activation(
                         model_parameters.aggregation_model.activation
                     ),
+                    num_hidden_layers=agg_layers,
                 )
                 for _ in range(self.num_variables_surf)
             )
@@ -404,18 +374,15 @@ class DoMINO(Module):
                 fusion_module=self.fusion_module_surf,
             )
 
-        if use_hierarchical_fusion and not self.encode_parameters:
+        if not self.encode_parameters:
             self.global_embed_proj = nn.Linear(
                 self.global_features, fusion_cfg.global_embed_dim
             )
         else:
             self.global_embed_proj = None
 
-        # Aggregation model for volume
+        # Fusion + aggregation for volume (fusion-only)
         if self.output_features_vol is not None:
-            base_layer_geo_vol = sum(
-                model_parameters.geometry_local.volume_neighbors_in_radius
-            )
             global_dim_vol = (
                 base_layer_p
                 if self.encode_parameters
@@ -427,22 +394,20 @@ class DoMINO(Module):
                 getattr(fusion_cfg, "geometry_dim_volume", 0) or 0,
                 global_dim_vol,
             )
-            agg_input_vol = _aggregation_input_size(
-                use_hierarchical_fusion,
-                fusion_cfg,
-                base_layer_geo_vol,
-                base_layer_nn,
-                base_layer_p,
-                position_encoder_base_neurons,
+            agg_input_vol = _fusion_aggregation_input_dim(fusion_cfg)
+            agg_base = model_parameters.aggregation_model.base_layer
+            agg_layers = getattr(
+                model_parameters.aggregation_model, "num_hidden_layers", 2
             )
             self.agg_model_vol = nn.ModuleList(
                 AggregationModel(
                     input_features=agg_input_vol,
                     output_features=1,
-                    base_layer=model_parameters.aggregation_model.base_layer,
+                    base_layer=agg_base,
                     activation=get_activation(
                         model_parameters.aggregation_model.activation
                     ),
+                    num_hidden_layers=agg_layers,
                 )
                 for _ in range(self.num_variables_vol)
             )
@@ -490,41 +455,22 @@ class DoMINO(Module):
         global_params_values: Float[torch.Tensor, "batch num_params 1"],
         global_params_reference: Float[torch.Tensor, "batch num_params 1"],
     ):
-        """Volume branch: token-direct geometry encoding then solution."""
+        """Volume branch: geometry encoding + fusion + aggregation."""
         volume_mesh_centers = data_dict["volume_mesh_centers"]
         encoding_g_vol = self.geo_rep_volume(geo_centers, volume_mesh_centers)
-        if self.use_sdf_in_basis_func:
+        if self.use_sdf:
             sdf_nodes = data_dict["sdf_nodes"]
-            sdf_nodes[:, -3:] = volume_mesh_centers - sdf_nodes[:, -3:]
-        if self.use_hierarchical_fusion:
-            global_embedding = self._get_global_embedding(
-                volume_mesh_centers,
-                global_params_values,
-                global_params_reference,
-            )
-            return self.solution_calculator_vol(
-                volume_mesh_centers,
-                encoding_g_vol,
-                encoding_node=None,
-                global_embedding=global_embedding,
-                global_params_values=global_params_values,
-                global_params_reference=global_params_reference,
-            )
-        encoding_node_vol = data_dict.get(
-            "encoding_node_vol",
-            torch.zeros(
-                volume_mesh_centers.shape[0],
-                volume_mesh_centers.shape[1],
-                0,
-                device=volume_mesh_centers.device,
-                dtype=volume_mesh_centers.dtype,
-            ),
+            sdf_nodes[:, :, -3:] = volume_mesh_centers - sdf_nodes[:, :, -3:]
+        global_embedding = self._get_global_embedding(
+            volume_mesh_centers,
+            global_params_values,
+            global_params_reference,
         )
         return self.solution_calculator_vol(
             volume_mesh_centers,
             encoding_g_vol,
-            encoding_node=encoding_node_vol,
-            global_embedding=None,
+            encoding_node=None,
+            global_embedding=global_embedding,
             global_params_values=global_params_values,
             global_params_reference=global_params_reference,
         )
@@ -536,47 +482,23 @@ class DoMINO(Module):
         global_params_values: Float[torch.Tensor, "batch num_params 1"],
         global_params_reference: Float[torch.Tensor, "batch num_params 1"],
     ):
-        """Surface branch: token-direct geometry encoding then solution."""
+        """Surface branch: geometry encoding + fusion + aggregation."""
         surface_mesh_centers = data_dict["surface_mesh_centers"]
         surface_normals = data_dict["surface_normals"]
         surface_areas = data_dict["surface_areas"].unsqueeze(-1)
         surface_mesh_neighbors = data_dict["surface_mesh_neighbors"]
         surface_neighbors_normals = data_dict["surface_neighbors_normals"]
         surface_neighbors_areas = data_dict["surface_neighbors_areas"].unsqueeze(-1)
-        if self.use_hierarchical_fusion:
-            global_embedding = self._get_global_embedding(
-                surface_mesh_centers,
-                global_params_values,
-                global_params_reference,
-            )
-            return self.solution_calculator_surf(
-                surface_mesh_centers,
-                encoding_g_surf,
-                encoding_node=None,
-                global_embedding=global_embedding,
-                surface_mesh_neighbors=surface_mesh_neighbors,
-                surface_normals=surface_normals,
-                surface_neighbors_normals=surface_neighbors_normals,
-                surface_areas=surface_areas,
-                surface_neighbors_areas=surface_neighbors_areas,
-                global_params_values=global_params_values,
-                global_params_reference=global_params_reference,
-            )
-        encoding_node_surf = data_dict.get(
-            "encoding_node_surf",
-            torch.zeros(
-                surface_mesh_centers.shape[0],
-                surface_mesh_centers.shape[1],
-                0,
-                device=surface_mesh_centers.device,
-                dtype=surface_mesh_centers.dtype,
-            ),
+        global_embedding = self._get_global_embedding(
+            surface_mesh_centers,
+            global_params_values,
+            global_params_reference,
         )
         return self.solution_calculator_surf(
             surface_mesh_centers,
             encoding_g_surf,
-            encoding_node=encoding_node_surf,
-            global_embedding=None,
+            encoding_node=None,
+            global_embedding=global_embedding,
             surface_mesh_neighbors=surface_mesh_neighbors,
             surface_normals=surface_normals,
             surface_neighbors_normals=surface_neighbors_normals,
